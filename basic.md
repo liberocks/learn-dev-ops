@@ -3231,7 +3231,15 @@ aws_secret_access_key=YOUR_SPACES_SECRET_KEY
 EOF
 
 # Install Velero CLI
+# macOS
 brew install velero
+
+# Linux
+# Fetch latest version
+VELERO_VERSION=$(curl -s https://api.github.com/repos/vmware-tanzu/velero/releases/latest | grep tag_name | cut -d '"' -f 4)
+wget "https://github.com/vmware-tanzu/velero/releases/download/${VELERO_VERSION}/velero-${VELERO_VERSION}-linux-amd64.tar.gz"
+tar -zxvf velero-${VELERO_VERSION}-linux-amd64.tar.gz
+sudo mv velero-${VELERO_VERSION}-linux-amd64/velero /usr/local/bin/
 
 # Install Velero in cluster
 velero install \
