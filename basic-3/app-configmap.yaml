@@ -1,0 +1,12 @@
+# save as: app-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  database_url: "postgres://db:5432/myapp"
+  api_key: "dev-key-12345"
+  app.properties: |              # Multi-line string using YAML pipe
+    color=blue
+    mode=development
+    cache.enabled=true

@@ -1,0 +1,12 @@
+# save as: pvc-example.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data-pvc
+spec:
+  accessModes:
+  - ReadWriteOnce              # RWO: One node can mount as read-write
+  resources:
+    requests:
+      storage: 5Gi             # Request 5 GB
+  storageClassName: do-block-storage

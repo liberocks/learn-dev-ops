@@ -1,0 +1,16 @@
+# save as: pod-with-pvc.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: data-pod
+spec:
+  containers:
+  - name: app
+    image: nginx:1.25
+    volumeMounts:
+    - name: data
+      mountPath: /data
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: app-data-pvc

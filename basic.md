@@ -247,19 +247,16 @@ doctl kubernetes options sizes
 
 # Create a cluster (smallest configuration)
 doctl kubernetes cluster create learn-k8s \
-  --region nyc1 \
-  --version 1.28.2-do.0 \
+  --region sgp1 \
   --node-pool "name=worker-pool;size=s-2vcpu-2gb;count=3"
 
 # This takes 3-5 minutes
 ```
 
 **What this does:**
-- Creates a Kubernetes cluster named "learn-k8s" in the NYC1 datacenter
-- Uses Kubernetes version 1.28.2 (check latest with `doctl kubernetes options versions`)
+- Creates a Kubernetes cluster named "learn-k8s" in the SGP1 datacenter (Singapore)
 - Creates 3 worker nodes, each with 2 CPU cores and 2GB RAM
 - The 3-node setup provides high availability and allows you to see pod distribution
-- **Cost**: ~$12/month ($4 per node × 3 nodes)
 
 **Connect to your cluster:**
 ```bash

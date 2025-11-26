@@ -27,15 +27,17 @@ This guide builds upon the [Basic Kubernetes Curriculum](./basic.md) to take you
 - [Alerting & Notification Channels](#alerting--notification-channels)
 
 ### **Part 4: Advanced Networking & Service Mesh**
+- [Advanced Ingress with Traefik](#advanced-ingress-with-traefik)
 - [Introduction to Service Mesh](#introduction-to-service-mesh)
 - [Istio Basics](#istio-basics)
 - [Traffic Management (Canary/Blue-Green)](#traffic-management)
 - [mTLS & Security](#mtls--security)
 
-### **Part 5: Security & Policy**
+### Part 5: Security & Policy
 - [Policy as Code (OPA/Kyverno)](#policy-as-code)
 - [Network Policies Deep Dive](#network-policies-deep-dive)
 - [Runtime Security](#runtime-security)
+- [Advanced Secret Management (External Secrets Operator)](#advanced-secret-management-external-secrets-operator)
 
 ### **Part 6: Advanced Helm**
 - [Chart Development](#chart-development)
@@ -459,9 +461,82 @@ This rule triggers if CPU usage is > 80% for 5 minutes.
 
 ## Part 4: Advanced Networking & Service Mesh
 
-A Service Mesh is a dedicated infrastructure layer for handling service-to-service communication. It provides features like traffic management, security (mTLS), and observability without changing application code. We will use **Istio**.
+We will explore advanced networking concepts, starting with modern Ingress Controllers and moving to Service Meshes.
+
+### Advanced Ingress with Traefik
+
+**Traefik** is a modern HTTP reverse proxy and load balancer that makes deploying microservices easy. It supports dynamic configuration and integrates natively with Kubernetes.
+
+**Why Traefik?**
+-   **Auto Discovery**: Automatically detects new services.
+-   **Middlewares**: Chainable components for features like authentication, rate limiting, and rewriting.
+-   **CRDs**: Uses `IngressRoute` for more power than standard Kubernetes Ingress.
+
+**Installation via Helm:**
+
+```bash
+helm repo add traefik https://traefik.github.io/charts
+helm repo update
+helm install traefik traefik/traefik -n traefik --create-namespace
+```
+
+**Exposing the Dashboard:**
+Traefik comes with a dashboard. You can expose it securely, but for learning, we can port-forward:
+
+```bash
+kubectl port-forward $(kubectl get pods --selector "app.kubernetes.io/name=traefik" --output=jsonpath={.items..metadata.name} -n traefik) -n traefik 9000:9000
+```
+Visit `http://localhost:9000/dashboard/`.
+
+**Using IngressRoute:**
+Instead of the standard `Ingress`, Traefik uses `IngressRoute`.
+
+```yaml
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: myapp-route
+  namespace: default
+spec:
+  entryPoints:
+    - web
+  routes:
+  - match: Host(`myapp.example.com`)
+    kind: Rule
+    services:
+    - name: myapp
+      port: 80
+```
+
+**Middlewares Example (Basic Auth):**
+
+1.  Create the Middleware:
+    ```yaml
+    apiVersion: traefik.containo.us/v1alpha1
+    kind: Middleware
+    metadata:
+      name: test-auth
+    spec:
+      basicAuth:
+        secret: mysecret # Contains user/password
+    ```
+
+2.  Attach to IngressRoute:
+    ```yaml
+    # ... inside IngressRoute spec ...
+    routes:
+    - match: Host(`protected.example.com`)
+      kind: Rule
+      middlewares:
+      - name: test-auth
+      services:
+      - name: myapp
+        port: 80
+    ```
 
 ### Introduction to Service Mesh
+
+A Service Mesh is a dedicated infrastructure layer for handling service-to-service communication. It provides features like traffic management, security (mTLS), and observability without changing application code. We will use **Istio**.
 
 -   **Data Plane**: Sidecar proxies (Envoy) deployed alongside every app container. Intercepts all network traffic.
 -   **Control Plane**: Manages and configures the proxies (Istiod).
@@ -645,6 +720,51 @@ helm install falco falcosecurity/falco -n falco --create-namespace
 ```
 
 Falco logs alerts to stdout or sends them to Slack/AlertManager when it detects anomalies.
+
+### Advanced Secret Management (External Secrets Operator)
+
+While Sealed Secrets (covered in Part 2) is excellent for GitOps, managing secrets across multiple environments or rotating them can be challenging. **External Secrets Operator (ESO)** is the industry standard for syncing secrets from external secret managers (like AWS Secrets Manager, HashiCorp Vault, or Azure Key Vault) into Kubernetes.
+
+**Why use ESO?**
+- **Centralization**: Manage all secrets in a secure, external vault.
+- **Rotation**: Rotate secrets in the provider, and ESO automatically updates them in the cluster.
+- **Security**: Secrets are never stored in Git.
+
+**Installation:**
+```bash
+helm repo add external-secrets https://charts.external-secrets.io
+helm install external-secrets external-secrets/external-secrets -n external-secrets --create-namespace
+```
+
+**How it works:**
+1.  **SecretStore**: Defines how to connect to your external provider (e.g., Vault).
+2.  **ExternalSecret**: Defines which secret to fetch and how to map it to a Kubernetes Secret.
+
+**Example (Conceptual):**
+Instead of committing a `SealedSecret`, you commit an `ExternalSecret` manifest.
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: database-credentials
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: my-secret-store
+    kind: SecretStore
+  target:
+    name: db-secret # The K8s Secret to create
+  data:
+  - secretKey: username
+    remoteRef:
+      key: prod/db
+      property: username
+  - secretKey: password
+    remoteRef:
+      key: prod/db
+      property: password
+```
 
 ---
 
