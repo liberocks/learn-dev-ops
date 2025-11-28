@@ -43,6 +43,20 @@ This guide builds upon the [Basic Kubernetes Curriculum](./basic.md) to take you
 - [Chart Development](#chart-development)
 - [Helmfile for Multi-Chart Management](#helmfile-for-multi-chart-management)
 
+### **Part 7: Production-Ready Stateful Workloads (PostgreSQL)**
+- [Running Databases on Kubernetes](#running-databases-on-kubernetes)
+- [CloudNativePG Operator](#cloudnativepg-operator)
+- [High Availability (Replicas)](#high-availability-replicas)
+- [Backups & PITR](#backups--pitr)
+- [Connection Pooling (PgBouncer)](#connection-pooling-pgbouncer)
+
+### **Part 8: Multi-Region & Multi-Cluster Strategy**
+- [Why Multi-Region?](#why-multi-region)
+- [Architecture Patterns](#architecture-patterns)
+- [Global Load Balancing (GSLB)](#global-load-balancing-gslb)
+- [Multi-Cluster Connectivity (Cilium Mesh)](#multi-cluster-connectivity-cilium-mesh)
+- [GitOps for Multi-Cluster (ArgoCD ApplicationSets)](#gitops-for-multi-cluster-argocd-applicationsets)
+
 ### **Capstone Project**
 - [End-to-End Production Platform](#capstone-project-end-to-end-production-platform)
 
@@ -467,10 +481,12 @@ We will explore advanced networking concepts, starting with modern Ingress Contr
 
 **Traefik** is a modern HTTP reverse proxy and load balancer that makes deploying microservices easy. It supports dynamic configuration and integrates natively with Kubernetes.
 
-**Why Traefik?**
--   **Auto Discovery**: Automatically detects new services.
--   **Middlewares**: Chainable components for features like authentication, rate limiting, and rewriting.
--   **CRDs**: Uses `IngressRoute` for more power than standard Kubernetes Ingress.
+**Core Concepts:**
+-   **EntryPoints**: The network entry points into Traefik (e.g., port 80 for HTTP, 443 for HTTPS).
+-   **Routers**: Analyze the incoming requests (Host, Path, Headers) and connect them to the appropriate services.
+-   **Middlewares**: Chainable components that tweak the requests before they reach the service (e.g., Auth, Rate Limiting, Compress).
+-   **Services**: The actual backend services (Kubernetes Services) that process the requests.
+-   **Providers**: The source of configuration (e.g., Kubernetes CRDs, Docker, File).
 
 **Installation via Helm:**
 
@@ -489,7 +505,7 @@ kubectl port-forward $(kubectl get pods --selector "app.kubernetes.io/name=traef
 Visit `http://localhost:9000/dashboard/`.
 
 **Using IngressRoute:**
-Instead of the standard `Ingress`, Traefik uses `IngressRoute`.
+Instead of the standard `Ingress`, Traefik uses `IngressRoute` CRD for more advanced configuration.
 
 ```yaml
 apiVersion: traefik.containo.us/v1alpha1
@@ -508,31 +524,123 @@ spec:
       port: 80
 ```
 
-**Middlewares Example (Basic Auth):**
+### Production Use Cases
 
-1.  Create the Middleware:
+#### 1. Automatic SSL/TLS with Let's Encrypt
+Traefik can automatically generate and renew certificates.
+
+First, configure the `CertResolver` in your Helm values or static config (usually done at install time):
+```yaml
+# values.yaml for Helm chart
+additionalArguments:
+  - "--certificatesresolvers.myresolver.acme.email=your-email@example.com"
+  - "--certificatesresolvers.myresolver.acme.storage=/data/acme.json"
+  - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+```
+
+Then, reference it in your `IngressRoute`:
+```yaml
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: myapp-secure
+spec:
+  entryPoints:
+    - websecure # Port 443
+  routes:
+  - match: Host(`secure.example.com`)
+    kind: Rule
+    services:
+    - name: myapp
+      port: 80
+  tls:
+    certResolver: myresolver
+```
+
+#### 2. Path-Based Routing (API Gateway Pattern)
+Route traffic to different microservices based on the URL path.
+
+```yaml
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: api-gateway
+spec:
+  entryPoints:
+    - web
+  routes:
+  - match: Host(`api.example.com`) && PathPrefix(`/users`)
+    kind: Rule
+    services:
+    - name: user-service
+      port: 8080
+  - match: Host(`api.example.com`) && PathPrefix(`/orders`)
+    kind: Rule
+    services:
+    - name: order-service
+      port: 8080
+```
+
+#### 3. Rate Limiting (DDoS Protection)
+Protect your API from abuse by limiting the number of requests.
+
+1.  **Define the Middleware**:
     ```yaml
     apiVersion: traefik.containo.us/v1alpha1
     kind: Middleware
     metadata:
-      name: test-auth
+      name: api-rate-limit
     spec:
-      basicAuth:
-        secret: mysecret # Contains user/password
+      rateLimit:
+        average: 100  # 100 requests per second
+        burst: 50     # Allow bursts of 50
     ```
 
-2.  Attach to IngressRoute:
+2.  **Apply to IngressRoute**:
     ```yaml
-    # ... inside IngressRoute spec ...
+    # ... inside IngressRoute ...
     routes:
-    - match: Host(`protected.example.com`)
+    - match: Host(`api.example.com`)
       kind: Rule
       middlewares:
-      - name: test-auth
+      - name: api-rate-limit
       services:
-      - name: myapp
+      - name: my-api
         port: 80
     ```
+
+#### 4. Canary Deployments (Weighted Round Robin)
+Gradually roll out a new version by splitting traffic.
+
+```yaml
+apiVersion: traefik.containo.us/v1alpha1
+kind: TraefikService
+metadata:
+  name: myapp-canary
+spec:
+  weighted:
+    services:
+    - name: myapp-v1
+      port: 80
+      weight: 90  # 90% traffic
+    - name: myapp-v2
+      port: 80
+      weight: 10  # 10% traffic
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: myapp-route
+spec:
+  entryPoints:
+    - web
+  routes:
+  - match: Host(`myapp.example.com`)
+    kind: Rule
+    services:
+    - name: myapp-canary # Point to the TraefikService, not the K8s Service
+      kind: TraefikService
+```
 
 ### Introduction to Service Mesh
 
@@ -841,6 +949,265 @@ releases:
 **Apply all charts:**
 ```bash
 helmfile sync
+```
+
+---
+
+## Part 7: Production-Ready Stateful Workloads (PostgreSQL)
+
+Running stateful workloads like databases on Kubernetes has historically been challenging. However, with the maturity of **Operators**, it is now a viable and powerful option for production.
+
+### Running Databases on Kubernetes
+
+**Managed Service (DbaaS) vs. Kubernetes Operator:**
+-   **Managed Service (e.g., DigitalOcean Managed Databases, AWS RDS)**: Easiest to set up, handled backups/updates, but higher cost and vendor lock-in.
+-   **Kubernetes Operator**: Runs inside your cluster, lower cost, full control, no lock-in, but requires more knowledge to manage.
+
+For this guide, we will use the **CloudNativePG (CNPG)** operator, which is widely considered the gold standard for running PostgreSQL on Kubernetes.
+
+### CloudNativePG Operator
+
+CNPG provides:
+-   **High Availability**: Automatic failover.
+-   **Self-Healing**: Automatically recovers from node failures.
+-   **Backups & PITR**: Continuous WAL archiving to S3/MinIO.
+-   **Connection Pooling**: Integrated PgBouncer.
+
+**Installation:**
+
+```bash
+helm repo add cnpg https://cloudnative-pg.io/charts
+helm repo update
+helm install cnpg cnpg/cloudnative-pg -n cnpg-system --create-namespace
+```
+
+### High Availability (Replicas)
+
+To ensure your database survives a node failure, you should run at least 3 instances (1 Primary, 2 Replicas).
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: production-db
+  namespace: database
+spec:
+  instances: 3 # 1 Primary + 2 Replicas
+  
+  # Storage Configuration
+  storage:
+    size: 10Gi
+    storageClass: do-block-storage
+  
+  # PostgreSQL Configuration
+  postgresql:
+    parameters:
+      max_connections: "1000"
+      shared_buffers: "256MB"
+```
+
+### Backups & PITR
+
+Production databases need **Point-in-Time Recovery (PITR)**. This allows you to restore the database to *any* second in the past (e.g., right before a bad `DROP TABLE` command).
+
+CNPG achieves this by archiving Write-Ahead Logs (WAL) to object storage (like AWS S3 or DigitalOcean Spaces).
+
+**1. Create a Secret with S3 Credentials (Securely):**
+Instead of creating a raw Kubernetes Secret (which is insecure in GitOps), we will use the **External Secrets Operator** (covered in Part 5) to fetch credentials from your cloud provider (e.g., AWS Secrets Manager or DigitalOcean Vault).
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: backup-s3-creds
+  namespace: database
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: do-vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: backup-s3-creds # The K8s Secret to be created
+  data:
+  - secretKey: ACCESS_KEY_ID
+    remoteRef:
+      key: production/postgres-backup
+      property: access-key
+  - secretKey: SECRET_ACCESS_KEY
+    remoteRef:
+      key: production/postgres-backup
+      property: secret-key
+```
+
+**2. Configure the Cluster for Archiving:**
+```yaml
+spec:
+  backup:
+    barmanObjectStore:
+      destinationPath: s3://my-backup-bucket/postgres/
+      endpointURL: https://nyc3.digitaloceanspaces.com
+      s3Credentials:
+        accessKeyId:
+          name: backup-s3-creds
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: backup-s3-creds
+          key: SECRET_ACCESS_KEY
+      wal:
+        compression: gzip
+      data:
+        compression: gzip
+```
+
+**Restoring:**
+To restore, you create a *new* Cluster resource that bootstraps from the backup.
+
+```yaml
+spec:
+  bootstrap:
+    recovery:
+      source: production-db
+      recoveryTarget:
+        targetTime: "2023-11-28 14:00:00.000000+00" # Restore to this exact time
+```
+
+### Connection Pooling (PgBouncer)
+
+PostgreSQL has a high per-connection overhead. In a microservices environment (like Kubernetes), you might have hundreds of pods trying to connect, which can overwhelm the database.
+
+**PgBouncer** is a lightweight connection pooler that sits in front of Postgres. It maintains a small pool of connections to the DB and reuses them for thousands of client clients.
+
+CNPG has native support for PgBouncer.
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Pooler
+metadata:
+  name: pooler-rw
+  namespace: database
+spec:
+  cluster:
+    name: production-db
+  instances: 2
+  type: rw
+  pgbouncer:
+    poolMode: transaction
+    parameters:
+      max_client_conn: "1000"
+      default_pool_size: "20"
+```
+
+**Application Connection:**
+Instead of connecting to the database service directly, your apps connect to the **Pooler** service (`pooler-rw-rw`).
+
+```yaml
+# App Environment Variables
+env:
+  - name: DB_HOST
+    value: pooler-rw-rw # Connects via PgBouncer
+  - name: DB_PORT
+    value: "5432"
+```
+
+---
+
+## Part 8: Multi-Region & Multi-Cluster Strategy
+
+As your application grows, running on a single cluster in a single region becomes a risk. A region outage (e.g., `nyc1` goes down) could take your entire business offline.
+
+### Why Multi-Region?
+1.  **High Availability (HA)**: Survive a complete region failure.
+2.  **Latency**: Serve users from the region closest to them (e.g., EU users hit `fra1`, US users hit `nyc1`).
+3.  **Compliance**: Keep data within specific borders (GDPR).
+
+### Architecture Patterns
+
+**1. Active-Passive (Disaster Recovery):**
+-   **Primary Cluster (Active)**: Handles 100% of traffic.
+-   **Secondary Cluster (Passive)**: Scaled down, waiting for failover.
+-   **Data Sync**: Async replication of databases and object storage.
+-   **Pros**: Simpler to manage.
+-   **Cons**: Higher RTO (Recovery Time Objective) during failover.
+
+**2. Active-Active:**
+-   **Both Clusters**: Handle traffic simultaneously.
+-   **Global Load Balancer**: Routes traffic based on geography or health.
+-   **Data Sync**: Requires complex bi-directional replication (e.g., CockroachDB, Cassandra) or sharding.
+-   **Pros**: Zero downtime, low latency.
+-   **Cons**: Very complex data consistency challenges.
+
+### Global Load Balancing (GSLB)
+
+Standard Kubernetes LoadBalancers are regional. To route traffic across regions, you need a **Global Server Load Balancer (GSLB)**. This is usually DNS-based.
+
+**Tools:**
+-   **ExternalDNS**: Can sync Kubernetes Services/Ingresses to DNS providers (Route53, Cloudflare, DigitalOcean DNS).
+-   **K8GB**: A cloud native GSLB solution that runs inside your cluster.
+
+**Example with ExternalDNS (Weighted Routing):**
+You can configure ExternalDNS to update your DNS provider with the IPs of your Ingress Controllers in both regions.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    external-dns.alpha.kubernetes.io/target: myapp.example.com
+    external-dns.alpha.kubernetes.io/set-identifier: "nyc1-cluster"
+    external-dns.alpha.kubernetes.io/aws-weight: "100" # Route53 specific
+```
+
+### Multi-Cluster Connectivity (Cilium Mesh)
+
+If Service A in `nyc1` needs to talk to Service B in `fra1`, you need a multi-cluster service mesh. **Cilium Cluster Mesh** is a high-performance option that connects clusters at the networking layer (eBPF).
+
+**How it works:**
+-   Cilium agents in both clusters peer with each other.
+-   Pod IPs are routable across the mesh (via VPN or VPC peering).
+-   Service discovery works globally (`service-b.default.svc.cluster.local` resolves to IPs in both clusters).
+
+**Enable Cluster Mesh:**
+```bash
+# On Cluster 1
+cilium clustermesh enable --context $CTX1
+
+# On Cluster 2
+cilium clustermesh enable --context $CTX2
+
+# Connect them
+cilium clustermesh connect --context $CTX1 --destination-context $CTX2
+```
+
+### GitOps for Multi-Cluster (ArgoCD ApplicationSets)
+
+Managing 10 clusters with 10 different `Application` manifests is unscalable. **ArgoCD ApplicationSets** allow you to generate Applications automatically based on a list of clusters.
+
+**Generator Example:**
+This deploys the `guestbook` app to *all* clusters labeled `env: production`.
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: guestbook-global
+spec:
+  generators:
+  - clusters:
+      selector:
+        matchLabels:
+          env: production
+  template:
+    metadata:
+      name: 'guestbook-{{name}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/argoproj/argocd-example-apps.git
+        targetRevision: HEAD
+        path: guestbook
+      destination:
+        server: '{{server}}'
+        namespace: guestbook
 ```
 
 ---

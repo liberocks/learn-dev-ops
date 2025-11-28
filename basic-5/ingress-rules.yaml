@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /  # Rewrite /v1/foo to /foo
+spec:
+  ingressClassName: nginx                          # Which Ingress Controller handles this
+  rules:
+  - host: myapp.example.com                        # Domain name (optional)
+    http:
+      paths:
+      - path: /v1                                  # Route /v1/* to app-v1-service
+        pathType: Prefix                           # Prefix match (/v1, /v1/anything)
+        backend:
+          service:
+            name: app-v1-service
+            port:
+              number: 80
+      - path: /v2                                  # Route /v2/* to app-v2-service
+        pathType: Prefix
+        backend:
+          service:
+            name: app-v2-service
+            port:
+              number: 80
