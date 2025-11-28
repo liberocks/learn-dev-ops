@@ -2222,6 +2222,28 @@ First, navigate to the directory:
 cd basic-6/express-api
 ```
 
+**Prerequisite: Build and Push Docker Image (DigitalOcean Container Registry)**
+The error `ErrImagePull` occurs if Kubernetes cannot find the image. We will use DigitalOcean Container Registry (DOCR).
+
+1.  **Login to DOCR:**
+    ```bash
+    doctl registry login
+    ```
+
+2.  **Build and Tag the image:**
+    Replace `<your-registry-name>` with your actual DigitalOcean registry name.
+    ```bash
+    docker build -t registry.digitalocean.com/<your-registry-name>/express-api:v1 ./app
+    ```
+
+3.  **Push the image:**
+    ```bash
+    docker push registry.digitalocean.com/<your-registry-name>/express-api:v1
+    ```
+
+4.  **Configure Kubernetes Secret (if needed):**
+    If your DOKS cluster is integrated with your registry, this happens automatically. If not, you may need to create a `docker-registry` secret and add it to your service account or deployment. For DOKS, usually, integration is seamless if enabled in settings.
+
 **Prerequisite: Database Setup**
 Since our application requires a database, we will install a PostgreSQL instance in each environment using the Bitnami Helm chart.
 
@@ -2241,10 +2263,12 @@ helm repo update
     ```
     *Note: This creates a service named `postgres-postgresql`.*
 
-2.  Deploy the Express API:
+2.  Deploy the Express API (Update `image.repository` to your DOCR path):
     ```bash
     helm upgrade --install express-api-dev ./chart \
       -f ./chart/values-dev.yaml \
+      --set image.repository="registry.digitalocean.com/<your-registry-name>/express-api" \
+      --set image.tag="v1" \
       --set env.DB_PASSWORD="dev_secret_password" \
       --set env.DB_HOST="postgres-postgresql" \
       --namespace dev --create-namespace
@@ -2263,6 +2287,8 @@ helm repo update
     ```bash
     helm upgrade --install express-api-staging ./chart \
       -f ./chart/values-staging.yaml \
+      --set image.repository="registry.digitalocean.com/<your-registry-name>/express-api" \
+      --set image.tag="v1" \
       --set env.DB_PASSWORD="staging_secret_password" \
       --set env.DB_HOST="postgres-postgresql" \
       --namespace staging --create-namespace
@@ -2281,6 +2307,8 @@ helm repo update
     ```bash
     helm upgrade --install express-api-prod ./chart \
       -f ./chart/values-prod.yaml \
+      --set image.repository="registry.digitalocean.com/<your-registry-name>/express-api" \
+      --set image.tag="v1" \
       --set env.DB_PASSWORD="prod_strong_password" \
       --set env.DB_HOST="postgres-postgresql" \
       --namespace prod --create-namespace
