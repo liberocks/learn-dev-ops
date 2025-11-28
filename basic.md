@@ -47,13 +47,20 @@ A progressive curriculum covering Kubernetes fundamentals through advanced topic
 - [TLS/SSL with cert-manager](#tlsssl-with-cert-manager)
   - Let's Encrypt Integration
 
-### **Part 6: Observability & Monitoring**
+### **Part 6: Helm Package Manager**
+- [Introduction to Helm](#introduction-to-helm)
+- [Helm Architecture](#helm-architecture)
+- [Using Existing Charts](#using-existing-charts)
+- [Creating Your Own Charts](#creating-your-own-charts)
+- [Helm Best Practices](#helm-best-practices)
+
+### **Part 7: Observability & Monitoring**
 - [Install Prometheus & Grafana Stack](#install-prometheus--grafana-stack)
 - [Custom Application Metrics](#custom-application-metrics)
   - ServiceMonitors
 - [Logging with Loki](#logging-with-efk-stack-elasticsearch-fluentd-kibana)
 
-### **Part 7: Advanced Kubernetes Concepts**
+### **Part 8: Advanced Kubernetes Concepts**
 - [Namespaces & Resource Quotas](#namespaces--resource-quotas)
   - ResourceQuota & LimitRange
 - [RBAC (Role-Based Access Control)](#rbac-role-based-access-control)
@@ -62,9 +69,7 @@ A progressive curriculum covering Kubernetes fundamentals through advanced topic
   - Custom Metrics Autoscaling
 - [Cluster Autoscaler](#cluster-autoscaler)
 
-### **Part 8: CI/CD & Production Best Practices**
-- [Helm Charts](#helm-charts)
-  - Chart Structure & Templating
+### **Part 9: CI/CD & Production Best Practices**
 - [GitOps with GitHub Actions](#gitops-with-github-actions)
   - CI/CD Pipeline Setup
 - [Security Best Practices](#security-best-practices)
@@ -1936,7 +1941,259 @@ tls:
 
 ---
 
-## **Part 6: Observability & Monitoring**
+---
+
+## **Part 6: Helm Package Manager**
+
+### Introduction to Helm
+
+**What is Helm?**
+Helm is the package manager for Kubernetes. Just as you use `apt` or `yum` for Linux, or `npm` for Node.js, you use `helm` for Kubernetes.
+
+- **Chart**: A package of pre-configured Kubernetes resources (YAML files).
+- **Release**: A specific instance of a chart deployed to the cluster.
+- **Repository**: A place where charts can be collected and shared.
+
+**Why use Helm?**
+1.  **Complexity Management**: Kubernetes apps often require Deployment, Service, Ingress, ConfigMap, Secret, etc. Helm bundles them all.
+2.  **Templating**: Instead of hardcoding values, Helm uses templates. You can deploy the same chart to Dev, Staging, and Prod with different configuration values.
+3.  **Easy Updates & Rollbacks**: `helm upgrade` updates your app, and `helm rollback` reverts it instantly if something goes wrong.
+4.  **Community**: Thousands of ready-to-use charts (Prometheus, MySQL, Redis, etc.) are available on Artifact Hub.
+
+### Helm Architecture
+
+Helm 3 (current version) is client-only (no Tiller server needed).
+
+1.  **Helm Client**: CLI tool that renders templates and communicates with the Kubernetes API.
+2.  **Chart**: Directory containing `Chart.yaml`, `values.yaml`, and `templates/`.
+3.  **Kubernetes API**: Helm sends the rendered YAMLs to the API server to create resources.
+
+### Using Existing Charts
+
+**1. Add a Repository**
+Repositories are where charts are stored. The most popular is Bitnami.
+
+```bash
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+```
+
+**2. Search for a Chart**
+```bash
+helm search repo bitnami/nginx
+```
+
+**3. Install a Chart**
+```bash
+# Basic install
+helm install my-nginx bitnami/nginx
+
+# Install into specific namespace
+helm install my-nginx bitnami/nginx --namespace web-server --create-namespace
+```
+
+**4. Customize Installation (The `values.yaml` file)**
+Every chart comes with default configuration in `values.yaml`. You can override these values.
+
+**Method A: Command line flags (good for simple changes)**
+```bash
+helm install my-nginx bitnami/nginx --set replicaCount=3 --set service.type=LoadBalancer
+```
+
+**Method B: Custom values file (Best Practice)**
+First, inspect the default values:
+```bash
+helm show values bitnami/nginx > default-values.yaml
+```
+
+Create your own `my-values.yaml`:
+```yaml
+replicaCount: 3
+service:
+  type: LoadBalancer
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+```
+
+Install using your file:
+```bash
+helm install my-nginx bitnami/nginx -f my-values.yaml
+```
+
+**5. Manage Releases**
+```bash
+# List releases
+helm list -A
+
+# Upgrade a release (change config or version)
+helm upgrade my-nginx bitnami/nginx -f new-values.yaml
+
+# View revision history
+helm history my-nginx
+
+# Rollback to previous version
+helm rollback my-nginx 1  # Rollback to revision 1
+```
+
+### Creating Your Own Charts
+
+Creating a Helm chart allows you to package your application for easy distribution and deployment.
+
+**1. Initialize a New Chart**
+Run the following command to generate the standard directory structure:
+```bash
+helm create my-app
+```
+
+**2. Anatomy of a Chart**
+Let's explore what was created in the `my-app/` directory:
+
+*   **`Chart.yaml`**: The metadata file. Contains the chart name, version, description, and app version.
+    ```yaml
+    apiVersion: v2
+    name: my-app
+    description: A Helm chart for Kubernetes
+    type: application
+    version: 0.1.0       # The version of the chart itself
+    appVersion: "1.16.0" # The version of the application (e.g., nginx version)
+    ```
+
+*   **`values.yaml`**: The default configuration values. This is the interface for your users.
+    ```yaml
+    replicaCount: 1
+    image:
+      repository: nginx
+      pullPolicy: IfNotPresent
+      tag: ""
+    service:
+      type: ClusterIP
+      port: 80
+    ```
+
+*   **`templates/`**: This directory contains your Kubernetes manifest templates combined with Go template logic.
+    *   `deployment.yaml`: Template for the Deployment resource.
+    *   `service.yaml`: Template for the Service resource.
+    *   `_helpers.tpl`: A place to define reusable template snippets (partials).
+    *   `NOTES.txt`: Text displayed to the user after a successful install.
+
+*   **`charts/`**: A directory for managing dependencies (other charts your chart depends on).
+
+**3. Writing Templates (The "Code")**
+Helm uses the Go templating language. You inject values from `values.yaml` into your templates using `{{ .Values.path.to.key }}`.
+
+*Example: `templates/deployment.yaml` snippet*
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "my-app.fullname" . }}
+  labels:
+    {{- include "my-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }} # Injected from values.yaml
+  selector:
+    matchLabels:
+      {{- include "my-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "my-app.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+              protocol: TCP
+```
+
+**4. Advanced Templating Features**
+
+*   **Pipelines & Functions**: Transform data.
+    ```yaml
+    # Quote a value to ensure it's treated as a string
+    key: {{ .Values.someValue | quote }}
+
+    # Set a default if the value is missing
+    tag: {{ .Values.image.tag | default "latest" }}
+
+    # Indent a block of text (useful for embedding YAML chunks)
+    {{- toYaml .Values.resources | nindent 12 }}
+    ```
+
+*   **Flow Control (If/Else)**: Conditionally create resources or fields.
+    ```yaml
+    {{- if .Values.ingress.enabled }}
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: {{ include "my-app.fullname" . }}
+    spec:
+      # ... ingress spec ...
+    {{- end }}
+    ```
+
+*   **Loops (Range)**: Iterate over lists or maps.
+    ```yaml
+    env:
+      {{- range $key, $val := .Values.env }}
+      - name: {{ $key }}
+        value: {{ $val | quote }}
+      {{- end }}
+    ```
+    *Corresponding `values.yaml`:*
+    ```yaml
+    env:
+      DB_HOST: "localhost"
+      DB_PORT: "5432"
+    ```
+
+**5. The `_helpers.tpl` File**
+This file defines "named templates" to keep your code DRY (Don't Repeat Yourself).
+For example, `{{ include "my-app.fullname" . }}` generates a consistent name for resources (e.g., `release-name-chart-name`).
+
+**6. Debugging & Linting**
+Before installing, always verify your chart.
+
+*   **Linting**: Checks for syntax errors and best practices.
+    ```bash
+    helm lint ./my-app
+    ```
+
+*   **Dry Run / Template**: Renders the templates to stdout without installing. This lets you see the final YAML.
+    ```bash
+    helm template my-release ./my-app --debug
+    ```
+
+*   **Dry Run Install**: Simulates an install against the cluster.
+    ```bash
+    helm install my-release ./my-app --dry-run
+    ```
+
+**7. Packaging & Sharing**
+Once your chart is ready, you can package it into a `.tgz` file.
+```bash
+helm package ./my-app
+# Output: my-app-0.1.0.tgz
+```
+You can then upload this file to a Helm repository or share it directly.
+
+### Helm Best Practices
+
+1.  **Keep `values.yaml` simple**: Only expose what needs to be configured.
+2.  **Use `_helpers.tpl`**: Put reusable logic (like label generation) in helper templates.
+3.  **Document your chart**: Use `README.md` and comments in `values.yaml`.
+4.  **Lint your chart**: Run `helm lint ./mychart` to catch errors.
+5.  **Dry Run**: Before installing, check what will be generated:
+    ```bash
+    helm install my-release ./mychart --dry-run --debug
+    ```
+6.  **Version Control**: Commit your chart source code to Git. Use a Chart Repository (like Harbor or GitHub Pages) for packaged charts.
+
+## **Part 7: Observability & Monitoring**
 
 ### Install Prometheus & Grafana Stack
 
@@ -2228,7 +2485,7 @@ helm install loki grafana/loki-stack \
 
 ---
 
-## **Part 7: Advanced Kubernetes Concepts**
+## **Part 8: Advanced Kubernetes Concepts**
 
 ### Namespaces & Resource Quotas
 
@@ -2693,376 +2950,7 @@ kubectl get pods -n kube-system | grep autoscaler
 
 ---
 
-## **Part 8: CI/CD & Production Best Practices**
-
-### Helm Charts
-
-**What is Helm?**
-- Package manager for Kubernetes (like apt, yum, npm)
-- **Chart**: Bundle of YAML templates defining an application
-- **Release**: Instance of a chart deployed to cluster
-- **Values**: Configuration parameters to customize charts
-
-**Why use Helm?**
-- Reusability: Same chart for dev, staging, prod (different values)
-- Templating: Dynamic YAML generation (loops, conditionals, variables)
-- Versioning: Track releases, easy rollbacks
-- Dependency management: Charts can depend on other charts
-- Simplified updates: `helm upgrade` vs manually editing YAMLs
-
-**🏭 Industry Best Practice - Helm:**
-
-**Production Helm usage:**
-
-**1. Chart structure:**
-```
-myapp/
-├── Chart.yaml              # Metadata
-├── values.yaml             # Default values
-├── values-dev.yaml         # Dev overrides
-├── values-staging.yaml     # Staging overrides
-├── values-prod.yaml        # Production overrides
-├── charts/                 # Dependencies
-│   └── postgresql/         # Dependent chart
-├── templates/
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   ├── ingress.yaml
-│   ├── configmap.yaml
-│   ├── secret.yaml
-│   ├── hpa.yaml
-│   ├── _helpers.tpl        # Template functions
-│   └── NOTES.txt           # Post-install instructions
-└── README.md
-```
-
-**2. Production values pattern:**
-```yaml
-# values-prod.yaml
-replicaCount: 5                # More than dev
-
-image:
-  repository: registry.company.com/app
-  tag: "1.2.3"                 # Pinned version (not :latest)
-  pullPolicy: IfNotPresent
-
-resources:
-  requests:
-    memory: "512Mi"
-    cpu: "500m"
-  limits:
-    memory: "1Gi"
-    cpu: "1000m"
-
-autoscaling:
-  enabled: true
-  minReplicas: 5
-  maxReplicas: 50
-  targetCPUUtilizationPercentage: 70
-
-ingress:
-  enabled: true
-  className: nginx
-  annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-    nginx.ingress.kubernetes.io/rate-limit: "100"
-  hosts:
-    - host: api.production.com
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - secretName: api-tls
-      hosts:
-        - api.production.com
-
-monitoring:
-  enabled: true
-  serviceMonitor:
-    enabled: true
-
-secrets:
-  externalSecrets:              # Use External Secrets Operator
-    enabled: true
-    backend: aws-secrets-manager
-```
-
-**3. Template best practices:**
-```yaml
-# Use semantic versioning
-apiVersion: v2
-name: myapp
-version: 1.2.3              # Chart version
-appVersion: "1.2.3"         # App version
-
-# Include metadata
-metadata:
-  name: {{ include "myapp.fullname" . }}
-  labels:
-    {{- include "myapp.labels" . | nindent 4 }}
-  annotations:
-    app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-
-# Always validate values
-{{- if not .Values.image.repository }}
-  {{- fail "image.repository is required" }}
-{{- end }}
-```
-
-**4. Helm deployment workflow:**
-```bash
-# 1. Lint chart
-helm lint ./myapp
-
-# 2. Dry-run (see what will be created)
-helm install myapp ./myapp \
-  -f values-prod.yaml \
-  --dry-run --debug
-
-# 3. Install to production
-helm install myapp ./myapp \
-  -f values-prod.yaml \
-  --namespace production \
-  --create-namespace
-
-# 4. Upgrade (zero downtime)
-helm upgrade myapp ./myapp \
-  -f values-prod.yaml \
-  --namespace production
-
-# 5. Rollback if issues
-helm rollback myapp 3  # Rollback to revision 3
-
-# 6. View history
-helm history myapp
-```
-
-**5. Helm secrets management:**
-```bash
-# Use helm-secrets plugin
-helm plugin install https://github.com/jkroepke/helm-secrets
-
-# Encrypt secrets with SOPS
-helm secrets encrypt values-prod.yaml
-
-# Deploy with encrypted secrets
-helm secrets install myapp ./myapp -f values-prod.yaml.enc
-```
-
-**🏭 Industry Best Practice - GitOps:**
-
-**Production GitOps workflow:**
-
-**1. GitOps principles:**
-```
-1. Declarative: Entire system described declaratively
-2. Versioned: Canonical desired state in Git
-3. Pulled automatically: Agents pull changes from Git
-4. Continuously reconciled: Software agents ensure actual state matches Git
-```
-
-**2. ArgoCD (Most popular):**
-```yaml
-# Application definition
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: production-app
-  namespace: argocd
-spec:
-  project: production
-  source:
-    repoURL: https://github.com/company/apps
-    targetRevision: main
-    path: apps/myapp
-    helm:
-      valueFiles:
-        - values-prod.yaml
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: production
-  syncPolicy:
-    automated:
-      prune: true              # Delete resources not in Git
-      selfHeal: true           # Revert manual changes
-      allowEmpty: false
-    syncOptions:
-      - CreateNamespace=true
-    retry:
-      limit: 5
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m
-```
-
-**3. GitOps workflow:**
-```
-Developer
-  │
-  │ 1. Push code to GitHub
-  ↓
-GitHub Actions
-  │
-  │ 2. Build Docker image
-  │ 3. Push to registry
-  │ 4. Update Helm values (image tag)
-  │ 5. Commit to Git repo
-  ↓
-Git Repository (Source of Truth)
-  │
-  │ 6. ArgoCD watches repo
-  ↓
-ArgoCD
-  │
-  │ 7. Detects changes
-  │ 8. Syncs to cluster
-  ↓
-Kubernetes Cluster
-  │
-  │ 9. Rolling update
-  ↓
-Production
-```
-
-**4. Production CI/CD best practices:**
-- ✅ All changes via Git (no manual kubectl)
-- ✅ Pull requests for reviews
-- ✅ Automated testing before merge
-- ✅ Staging environment matches production
-- ✅ Blue/green or canary deployments
-- ✅ Automated rollback on failure
-- ✅ Audit trail (Git log)
-- ❌ Never kubectl apply directly to production
-- ❌ Don't use :latest tag
-- ❌ Don't skip staging environment
-
-**5. Progressive delivery:**
-```yaml
-# Flagger for canary deployments
-apiVersion: flagger.app/v1beta1
-kind: Canary
-metadata:
-  name: myapp
-spec:
-  targetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: myapp
-  progressDeadlineSeconds: 60
-  service:
-    port: 80
-  analysis:
-    interval: 1m
-    threshold: 5
-    maxWeight: 50
-    stepWeight: 10
-    metrics:
-    - name: request-success-rate
-      thresholdRange:
-        min: 99              # Rollback if < 99% success
-    - name: request-duration
-      thresholdRange:
-        max: 500             # Rollback if p99 > 500ms
-```
-
-**Learning vs Production:**
-- **Learning**: Manual `helm install`, `kubectl apply` is fine
-- **Production**: GitOps with ArgoCD/Flux is the standard
-- **Why**: Auditability, reproducibility, collaboration, safety
-
-**Create a Helm chart:**
-```bash
-helm create myapp
-
-cd myapp
-# Directory structure:
-# myapp/
-# ├── Chart.yaml           # Metadata (name, version, description)
-# ├── values.yaml          # Default configuration values
-# ├── charts/              # Dependent charts
-# └── templates/           # YAML templates (deployment.yaml, service.yaml, etc.)
-#     ├── deployment.yaml  # Uses {{ .Values.* }} for templating
-#     ├── service.yaml
-#     ├── ingress.yaml
-#     └── _helpers.tpl     # Template helpers/functions
-```
-
-**How templating works:**
-- `values.yaml` has: `replicaCount: 3`
-- `deployment.yaml` has: `replicas: {{ .Values.replicaCount }}`
-- `helm install` renders: `replicas: 3`
-
-**Custom values.yaml:**
-```yaml
-# myapp/values.yaml
-replicaCount: 3
-
-image:
-  repository: nginx
-  tag: "1.25"
-  pullPolicy: IfNotPresent
-
-service:
-  type: LoadBalancer
-  port: 80
-
-ingress:
-  enabled: true
-  className: nginx
-  hosts:
-    - host: myapp.example.com
-      paths:
-        - path: /
-          pathType: Prefix
-
-resources:
-  requests:
-    memory: "128Mi"
-    cpu: "100m"
-  limits:
-    memory: "256Mi"
-    cpu: "200m"
-
-autoscaling:
-  enabled: true
-  minReplicas: 2
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-```
-
-**Deploy Helm chart:**
-```bash
-# Install (creates new release)
-helm install myapp ./myapp
-
-# Install with custom values
-helm install myapp ./myapp --set replicaCount=5
-
-# Install with values file
-helm install myapp ./myapp -f production-values.yaml
-
-# Upgrade existing release
-helm upgrade myapp ./myapp
-
-# Rollback to previous release
-helm rollback myapp
-
-# List releases
-helm list
-
-# View release history
-helm history myapp
-
-# Uninstall (deletes all resources)
-helm uninstall myapp
-```
-
-**Common Helm patterns:**
-- **Development**: `helm install dev ./myapp -f dev-values.yaml`
-- **Staging**: `helm install staging ./myapp -f staging-values.yaml`
-- **Production**: `helm install prod ./myapp -f prod-values.yaml`
-- Same chart, different configurations!
+## **Part 9: CI/CD & Production Best Practices**
 
 ### GitOps with GitHub Actions
 
