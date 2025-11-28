@@ -105,35 +105,6 @@ A progressive curriculum covering Kubernetes fundamentals through advanced topic
 5. **Practice observability and operations** — Set up monitoring with Prometheus/Grafana, implement logging, practice scaling, rolling updates, and troubleshooting
 6. **Build production-ready workflows** — Implement CI/CD pipelines, Helm charts, security best practices, cost optimization, backup/disaster recovery strategies
 
-### Further Considerations
-
-1. **Budget management** — DOKS clusters cost ~$12/month minimum (3 nodes); consider starting with smallest node sizes and destroying clusters when not actively learning
-2. **Learning pace** — Recommend 2-3 weeks per part for thorough understanding; should you prefer accelerated (1 week per part) or extended (4+ weeks) timeline?
-3. **Project complexity** — Would you like to build toward a specific real-world project (e.g., blog platform, microservices app, data pipeline) or focus on general Kubernetes skills?
-
-liberocks: I mean a complete walkthrough with code snippet
-
-GitHub Copilot: I understand you want a complete, detailed walkthrough with actual code snippets and commands. Since I'm currently in planning mode, I can only create plans - not implement them.
-
-However, I can create a detailed plan that outlines exactly what code, commands, and examples should be included in each section of the walkthrough. Would you like me to:
-
-1. **Create a detailed plan** that specifies all the code snippets, kubectl commands, YAML manifests, and exercises that should be included in a complete Kubernetes DOKS tutorial
-
-2. **Switch to implementation mode** where I can actually create the full walkthrough documentation with all the working code examples, commands, and step-by-step instructions
-
-Which would you prefer?
-
-liberocks: option 1
-
-GitHub Copilot: Created 10 todos
-
-# Complete Kubernetes on DigitalOcean DOKS - Learning Plan with Code Snippets
-
-## Overview
-A comprehensive curriculum to master Kubernetes using DigitalOcean's managed Kubernetes service. Each module includes detailed commands, YAML manifests, exercises, and troubleshooting guides.
-
----
-
 ## **Part 1: Environment Setup & Introduction**
 
 ### What You'll Learn
@@ -1938,8 +1909,6 @@ tls:
 - ✅ Monitor certificate expiry
 - ❌ Never commit TLS private keys to Git
 - ❌ Don't use self-signed certs in production
-
----
 
 ---
 
@@ -3941,14 +3910,6 @@ kubectl delete svc --all --all-namespaces --field-selector spec.type=LoadBalance
 
 This ensures you only pay for resources while actively learning, making the curriculum affordable!
 
----
-
-This comprehensive plan provides a complete structured learning path with all necessary code snippets, commands, and examples to master Kubernetes on DigitalOcean DOKS!
-
-liberocks: How to cleanup digital ocean resources after I finished learning?
-
-GitHub Copilot: Here's how to properly clean up all DigitalOcean resources after you finish learning to avoid ongoing charges:
-
 ## **Cleanup Commands**
 
 ### 1. Delete the Kubernetes Cluster
@@ -4092,10 +4053,6 @@ doctl kubernetes cluster create learn-k8s \
 ```
 
 This ensures you're only charged when actively learning!
-
-liberocks: How to clean local kubeconfig?
-
-GitHub Copilot: Here's how to clean up your local kubeconfig after deleting the cluster:
 
 ## **Remove DOKS Cluster from kubeconfig**
 
