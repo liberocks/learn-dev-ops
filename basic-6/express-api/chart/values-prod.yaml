@@ -1,0 +1,8 @@
+replicaCount: 3
+env:
+  ENVIRONMENT: "production"
+  DB_NAME: "prod_db"
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi

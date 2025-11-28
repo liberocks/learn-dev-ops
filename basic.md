@@ -2162,6 +2162,137 @@ You can then upload this file to a Helm repository or share it directly.
     ```
 6.  **Version Control**: Commit your chart source code to Git. Use a Chart Repository (like Harbor or GitHub Pages) for packaged charts.
 
+### Use Case: Express.js API with PostgreSQL
+
+In this real-world example, we will create a Helm chart for a basic Express.js API that connects to a PostgreSQL database. We will then configure it for three environments: **Dev**, **Staging**, and **Production**.
+
+**1. The Application**
+We have a simple Express.js app in `basic-6/express-api/app/` that connects to a database using environment variables.
+
+*   `index.js`: The API server.
+*   `Dockerfile`: To containerize the app.
+
+**2. The Helm Chart**
+The chart is located in `basic-6/express-api/chart/`.
+
+*   **`templates/deployment.yaml`**: Defines the Deployment. It uses a ConfigMap and Secret to inject environment variables.
+*   **`templates/service.yaml`**: Exposes the application.
+*   **`templates/configmap.yaml`**: Stores non-sensitive config (DB host, port, name).
+*   **`templates/secret.yaml`**: Stores sensitive config (DB password).
+
+**3. Environment Configuration**
+We use different values files for each environment to override the defaults in `values.yaml`.
+
+*   **`values-dev.yaml`**:
+    ```yaml
+    replicaCount: 1
+    env:
+      ENVIRONMENT: "development"
+      DB_NAME: "dev_db"
+    ```
+
+*   **`values-staging.yaml`**:
+    ```yaml
+    replicaCount: 2
+    env:
+      ENVIRONMENT: "staging"
+      DB_NAME: "staging_db"
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    ```
+
+*   **`values-prod.yaml`**:
+    ```yaml
+    replicaCount: 3
+    env:
+      ENVIRONMENT: "production"
+      DB_NAME: "prod_db"
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    ```
+
+**4. Deployment Instructions**
+
+First, navigate to the directory:
+```bash
+cd basic-6/express-api
+```
+
+**Prerequisite: Database Setup**
+Since our application requires a database, we will install a PostgreSQL instance in each environment using the Bitnami Helm chart.
+
+```bash
+# Add the Bitnami repo if you haven't already
+helm repo add bitnami https://charts.bitnami.com/bitnami
+helm repo update
+```
+
+**Deploy to Development:**
+1.  Install PostgreSQL in the `dev` namespace:
+    ```bash
+    helm install postgres bitnami/postgresql \
+      --set auth.postgresPassword="dev_secret_password" \
+      --set auth.database="dev_db" \
+      --namespace dev --create-namespace
+    ```
+    *Note: This creates a service named `postgres-postgresql`.*
+
+2.  Deploy the Express API:
+    ```bash
+    helm upgrade --install express-api-dev ./chart \
+      -f ./chart/values-dev.yaml \
+      --set env.DB_PASSWORD="dev_secret_password" \
+      --set env.DB_HOST="postgres-postgresql" \
+      --namespace dev --create-namespace
+    ```
+
+**Deploy to Staging:**
+1.  Install PostgreSQL in the `staging` namespace:
+    ```bash
+    helm install postgres bitnami/postgresql \
+      --set auth.postgresPassword="staging_secret_password" \
+      --set auth.database="staging_db" \
+      --namespace staging --create-namespace
+    ```
+
+2.  Deploy the Express API:
+    ```bash
+    helm upgrade --install express-api-staging ./chart \
+      -f ./chart/values-staging.yaml \
+      --set env.DB_PASSWORD="staging_secret_password" \
+      --set env.DB_HOST="postgres-postgresql" \
+      --namespace staging --create-namespace
+    ```
+
+**Deploy to Production:**
+1.  Install PostgreSQL in the `prod` namespace:
+    ```bash
+    helm install postgres bitnami/postgresql \
+      --set auth.postgresPassword="prod_strong_password" \
+      --set auth.database="prod_db" \
+      --namespace prod --create-namespace
+    ```
+
+2.  Deploy the Express API:
+    ```bash
+    helm upgrade --install express-api-prod ./chart \
+      -f ./chart/values-prod.yaml \
+      --set env.DB_PASSWORD="prod_strong_password" \
+      --set env.DB_HOST="postgres-postgresql" \
+      --namespace prod --create-namespace
+    ```
+
+**5. Verification**
+Check the pods in the production namespace:
+```bash
+kubectl get pods -n prod
+```
+You should see 3 replicas running with higher resource limits than dev.
+
 ## **Part 7: Observability & Monitoring**
 
 ### Install Prometheus & Grafana Stack

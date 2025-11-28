@@ -1,0 +1,27 @@
+replicaCount: 1
+
+image:
+  repository: my-docker-registry/express-api
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+
+env:
+  ENVIRONMENT: "development"
+  DB_HOST: "postgres-service"
+  DB_PORT: "5432"
+  DB_NAME: "mydb"
+  DB_USER: "postgres"
+  # DB_PASSWORD should be passed via secrets or overridden securely
+
+resources: {}
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi

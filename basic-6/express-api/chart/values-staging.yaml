@@ -1,0 +1,8 @@
+replicaCount: 2
+env:
+  ENVIRONMENT: "staging"
+  DB_NAME: "staging_db"
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
