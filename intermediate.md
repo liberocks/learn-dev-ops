@@ -43,14 +43,21 @@ This guide builds upon the [Basic Kubernetes Curriculum](./basic.md) to take you
 - [Chart Development](#chart-development)
 - [Helmfile for Multi-Chart Management](#helmfile-for-multi-chart-management)
 
-### **Part 7: Production-Ready Stateful Workloads (PostgreSQL)**
+### **Part 7: Kustomize (Native Configuration Management)**
+- [Core Concepts: Base & Overlays](#core-concepts-base--overlays)
+- [The kustomization.yaml File](#the-kustomizationyaml-file)
+- [Common Transformers](#common-transformers)
+- [ConfigMap & Secret Generators](#configmap--secret-generators)
+- [Kustomize vs. Helm](#kustomize-vs-helm)
+
+### **Part 8: Production-Ready Stateful Workloads (PostgreSQL)**
 - [Running Databases on Kubernetes](#running-databases-on-kubernetes)
 - [CloudNativePG Operator](#cloudnativepg-operator)
 - [High Availability (Replicas)](#high-availability-replicas)
 - [Backups & PITR](#backups--pitr)
 - [Connection Pooling (PgBouncer)](#connection-pooling-pgbouncer)
 
-### **Part 8: Multi-Region & Multi-Cluster Strategy**
+### **Part 9: Multi-Region & Multi-Cluster Strategy**
 - [Why Multi-Region?](#why-multi-region)
 - [Architecture Patterns](#architecture-patterns)
 - [Global Load Balancing (GSLB)](#global-load-balancing-gslb)
@@ -953,7 +960,117 @@ helmfile sync
 
 ---
 
-## Part 7: Production-Ready Stateful Workloads (PostgreSQL)
+## Part 7: Kustomize (Native Configuration Management)
+
+While Helm is a package manager that uses templates, **Kustomize** is a configuration management tool that uses a template-free approach based on **overlays**. It is built into `kubectl` (since v1.14), making it a "native" choice for many.
+
+### Core Concepts: Base & Overlays
+
+Kustomize allows you to define a **Base** (common configuration) and **Overlays** (environment-specific patches).
+
+**Directory Structure:**
+```text
+├── base/
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   └── kustomization.yaml
+└── overlays/
+    ├── dev/
+    │   ├── kustomization.yaml
+    │   └── replica_count.yaml
+    └── prod/
+        ├── kustomization.yaml
+        └── resource_limits.yaml
+```
+
+### The `kustomization.yaml` File
+
+This file tells Kustomize what to do.
+
+**Base (`base/kustomization.yaml`):**
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- deployment.yaml
+- service.yaml
+
+commonLabels:
+  app: myapp
+```
+
+**Overlay (`overlays/prod/kustomization.yaml`):**
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- ../../base
+
+namePrefix: prod-
+namespace: production
+
+patches:
+- path: resource_limits.yaml
+```
+
+### Common Transformers
+
+Kustomize can automatically modify resources without touching the original YAML.
+
+1.  **`commonLabels`**: Adds a label to *every* resource and selector.
+2.  **`namePrefix` / `nameSuffix`**: Renames resources (e.g., `myapp` -> `prod-myapp`).
+3.  **`namespace`**: Sets the namespace for all resources.
+4.  **`images`**: Overrides container images and tags.
+
+**Example: Changing Image Tag in Prod**
+```yaml
+images:
+- name: my-app-image
+  newName: registry.example.com/my-app
+  newTag: v2.0.0
+```
+
+### ConfigMap & Secret Generators
+
+Instead of writing `ConfigMap` YAMLs manually, generate them from files or literals. This appends a hash to the name (e.g., `my-config-v5d89f`), forcing a Pod rollout when content changes.
+
+```yaml
+configMapGenerator:
+- name: app-config
+  files:
+  - config.properties
+  literals:
+  - ENVIRONMENT=production
+```
+
+### Usage
+
+Since Kustomize is built into `kubectl`, you can apply it directly:
+
+```bash
+# Apply the Dev overlay
+kubectl apply -k overlays/dev/
+
+# View the generated YAML (dry-run)
+kubectl kustomize overlays/prod/
+```
+
+### Kustomize vs. Helm
+
+| Feature | Helm | Kustomize |
+| :--- | :--- | :--- |
+| **Approach** | Templating (Go templates) | Overlays (Patching) |
+| **Complexity** | High (learning curve) | Low (pure YAML) |
+| **Packaging** | Charts (tarballs) | Git directories |
+| **Use Case** | Distributing apps to others | Managing own config across envs |
+
+Many teams use **both**: Helm to install 3rd party apps (Prometheus, Cert-Manager) and Kustomize for their own internal microservices.
+
+---
+
+## Part 8: Production-Ready Stateful Workloads (PostgreSQL)
 
 Running stateful workloads like databases on Kubernetes has historically been challenging. However, with the maturity of **Operators**, it is now a viable and powerful option for production.
 
@@ -1111,7 +1228,7 @@ env:
 
 ---
 
-## Part 8: Multi-Region & Multi-Cluster Strategy
+## Part 9: Multi-Region & Multi-Cluster Strategy
 
 As your application grows, running on a single cluster in a single region becomes a risk. A region outage (e.g., `nyc1` goes down) could take your entire business offline.
 
