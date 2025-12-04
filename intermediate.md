@@ -25,6 +25,7 @@ This guide builds upon the [Basic Kubernetes Curriculum](./basic.md) to take you
 - [Grafana Dashboards as Code](#grafana-dashboards-as-code)
 - [Log Aggregation with Loki](#log-aggregation-with-loki)
 - [Alerting & Notification Channels](#alerting--notification-channels)
+- [Hands-on Practice: Observability with Datadog (via Terraform)](#hands-on-practice-observability-with-datadog-via-terraform)
 
 ### **Part 4: Advanced Networking & Service Mesh**
 - [Advanced Ingress with Traefik](#advanced-ingress-with-traefik)
@@ -477,6 +478,211 @@ spec:
 ```
 
 This rule triggers if CPU usage is > 80% for 5 minutes.
+
+### Hands-on Practice: Observability with Datadog (via Terraform)
+
+In this real-world scenario, we will use Terraform to:
+1.  Provision the Datadog Agent.
+2.  Deploy a custom "Metric Generator" service that emits business metrics (checkout latency).
+3.  Create advanced monitors (Anomaly Detection & Composite Alerts) to watch those metrics.
+
+**Prerequisites:**
+1.  Datadog Account (API Key & App Key).
+2.  Terraform installed.
+
+**1. Setup Providers**
+We need `datadog` (for monitors), `helm` (for the agent), and `kubernetes` (for the app).
+
+```hcl
+terraform {
+  required_providers {
+    datadog = { source = "DataDog/datadog" }
+    helm    = { source = "hashicorp/helm" }
+    kubernetes = { source = "hashicorp/kubernetes" }
+  }
+}
+
+provider "datadog" {
+  api_key = var.datadog_api_key
+  app_key = var.datadog_app_key
+}
+
+provider "helm" {
+  kubernetes { config_path = "~/.kube/config" }
+}
+
+provider "kubernetes" {
+  config_path = "~/.kube/config"
+}
+```
+
+**2. Install Datadog Agent**
+Deploy the agent to all nodes to collect metrics and logs.
+
+```hcl
+resource "helm_release" "datadog_agent" {
+  name       = "datadog"
+  repository = "https://helm.datadoghq.com"
+  chart      = "datadog"
+  namespace  = "datadog"
+  create_namespace = true
+
+  set_sensitive {
+    name  = "datadog.apiKey"
+    value = var.datadog_api_key
+  }
+  # Enable DogStatsD for custom metrics
+  set {
+    name  = "datadog.dogstatsd.useHostPort"
+    value = "true"
+  }
+}
+```
+
+**3. Deploy Express App & Traffic Generator**
+We will deploy a simple Express.js app that emits a custom metric `custom.checkout.latency` via DogStatsD. We also deploy a traffic generator to hit the endpoint.
+
+*Note: The source code for these apps is in the `intermediate-3/` folder.*
+
+```hcl
+# 1. Express App Code (Mounted via ConfigMap for simplicity)
+resource "kubernetes_config_map" "express_code" {
+  metadata { name = "express-code" }
+  data = {
+    "index.js" = file("${path.module}/../intermediate-3/express-app/index.js")
+    "package.json" = file("${path.module}/../intermediate-3/express-app/package.json")
+  }
+}
+
+# 2. Express App Deployment
+resource "kubernetes_deployment" "express_app" {
+  metadata { name = "express-app" }
+  spec {
+    replicas = 1
+    selector { match_labels = { app = "express-app" } }
+    template {
+      metadata { labels = { app = "express-app" } }
+      spec {
+        container {
+          image = "node:18-alpine"
+          name  = "express"
+          command = ["/bin/sh", "-c"]
+          # Install deps and run
+          args = ["cd /app && npm install && node index.js"]
+          
+          # Inject Node IP to reach the Datadog Agent
+          env {
+            name = "DD_AGENT_HOST"
+            value_from {
+              field_ref { field_path = "status.hostIP" }
+            }
+          }
+          volume_mount {
+            name       = "code-vol"
+            mount_path = "/app"
+          }
+        }
+        volume {
+          name = "code-vol"
+          config_map { name = "express-code" }
+        }
+      }
+    }
+  }
+}
+
+# 3. Service for Express App
+resource "kubernetes_service" "express_service" {
+  metadata { name = "express-service" }
+  spec {
+    selector = { app = "express-app" }
+    port {
+      port        = 8080
+      target_port = 8080
+    }
+  }
+}
+
+# 4. Traffic Generator
+resource "kubernetes_deployment" "traffic_generator" {
+  metadata { name = "traffic-generator" }
+  spec {
+    replicas = 1
+    selector { match_labels = { app = "traffic-generator" } }
+    template {
+      metadata { labels = { app = "traffic-generator" } }
+      spec {
+        container {
+          image = "curlimages/curl"
+          name  = "traffic"
+          command = ["/bin/sh", "-c"]
+          args = ["while true; do curl -s http://express-service:8080/checkout; echo ''; sleep 1; done"]
+        }
+      }
+    }
+  }
+}
+```
+
+**4. Create Advanced Monitors**
+Now that data is flowing, let's create monitors that are impossible to manage manually at scale.
+
+**Monitor A: Anomaly Detection**
+Alert if latency behaves differently than usual (e.g., sudden spike compared to last week).
+
+```hcl
+resource "datadog_monitor" "latency_anomaly" {
+  name    = "[Anomaly] Checkout Latency Deviation"
+  type    = "query alert"
+  message = "Latency is abnormal! @slack-channel"
+  
+  # Query: Average latency over last 1h, using 'basic' algorithm, 2 deviations
+  query = "avg(last_1h):anomalies(avg:custom.checkout.latency{service:checkout-api}, 'basic', 2) > 1"
+
+  monitor_thresholds {
+    critical = 1.0
+  }
+}
+```
+
+**Monitor B: Composite Monitor**
+Reduce noise by alerting ONLY if Latency is high AND CPU is high.
+
+```hcl
+# 1. High Latency Monitor (Hidden)
+resource "datadog_monitor" "latency_high" {
+  name    = "High Latency"
+  type    = "metric alert"
+  query   = "avg(last_5m):avg:custom.checkout.latency{service:checkout-api} > 400"
+  message = "Latency > 400ms"
+}
+
+# 2. High CPU Monitor (Hidden)
+resource "datadog_monitor" "cpu_high" {
+  name    = "High CPU"
+  type    = "metric alert"
+  query   = "avg(last_5m):avg:system.cpu.idle{*} by {host} < 10"
+  message = "CPU Idle < 10%"
+}
+
+# 3. Composite Monitor (The real alert)
+resource "datadog_monitor" "composite_alert" {
+  name    = "[Critical] High Latency AND High CPU"
+  type    = "composite"
+  message = "System is overloaded and slow! @pagerduty"
+  
+  # Logic: Trigger if BOTH monitors are in Alert state
+  query   = "${datadog_monitor.latency_high.id} && ${datadog_monitor.cpu_high.id}"
+}
+```
+
+**5. Apply & Verify**
+```bash
+export TF_VAR_datadog_api_key="your-key"
+export TF_VAR_datadog_app_key="your-app-key"
+terraform apply
+```
+Go to Datadog > Metrics > Explorer and search for `custom.checkout.latency` to see your data!
 
 ---
 
