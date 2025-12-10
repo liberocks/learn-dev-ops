@@ -619,32 +619,33 @@ Observability goes beyond simple monitoring ("is it up?") to understanding "why 
 -   **Loki**: Aggregates logs (like Splunk/ELK but cheaper).
 -   **Promtail**: Agent that ships logs from nodes to Loki.
 
-### Installing kube-prometheus-stack
+### Installing kube-prometheus-stack with Terraform
 
-The community standard is the `kube-prometheus-stack` Helm chart, which includes Prometheus, Grafana, AlertManager, and node-exporters.
+Instead of running manual Helm commands, we define the stack in Terraform. This ensures our observability infrastructure is versioned and reproducible.
 
-```bash
-# Add repo
-helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-helm repo update
+```hcl
+resource "helm_release" "kube_prometheus_stack" {
+  name       = "kube-prometheus-stack"
+  repository = "https://prometheus-community.github.io/helm-charts"
+  chart      = "kube-prometheus-stack"
+  namespace  = "monitoring"
+  create_namespace = true
 
-# Create namespace
-kubectl create namespace monitoring
-
-# Install
-helm install monitoring prometheus-community/kube-prometheus-stack -n monitoring
+  set {
+    name  = "grafana.adminPassword"
+    value = "admin" # In production, use a secret!
+  }
+}
 ```
 
 **Accessing Grafana:**
 
-```bash
-# Get admin password
-kubectl get secret --namespace monitoring monitoring-grafana -o jsonpath="{.data.admin-password}" | base64 --decode ; echo
+After `terraform apply`, you can access Grafana:
 
-# Port forward
-kubectl port-forward svc/monitoring-grafana 3000:80 -n monitoring
+```bash
+kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80
 ```
-Visit `http://localhost:3000` (User: `admin`, Password: from command above).
+Visit `http://localhost:3000` (User: `admin`, Password: `admin`).
 
 ### Prometheus Deep Dive
 
@@ -670,20 +671,28 @@ spec:
     path: /metrics
 ```
 
-### Log Aggregation with Loki
+### Log Aggregation with Loki (via Terraform)
 
-To add logging, we need to install Loki and Promtail.
+To add logging, we install the Loki stack (Loki + Promtail) using Terraform.
 
-```bash
-helm repo add grafana https://grafana.github.io/helm-charts
-helm repo update
+```hcl
+resource "helm_release" "loki_stack" {
+  name       = "loki"
+  repository = "https://grafana.github.io/helm-charts"
+  chart      = "loki-stack"
+  namespace  = "monitoring"
 
-# Install Loki Stack (Loki + Promtail)
-helm install loki grafana/loki-stack \
-    --namespace monitoring \
-    --set grafana.enabled=false \
-    --set prometheus.enabled=false \
-    --set promtail.enabled=true
+  set {
+    name  = "promtail.enabled"
+    value = "true"
+  }
+  
+  # We use the Grafana from kube-prometheus-stack, so disable it here
+  set {
+    name  = "grafana.enabled"
+    value = "false"
+  }
+}
 ```
 
 **Visualizing Logs in Grafana:**
@@ -722,144 +731,362 @@ spec:
 
 This rule triggers if CPU usage is > 80% for 5 minutes.
 
-### Hands-on Practice: Observability with Datadog (via Terraform)
+### Hands-on Practice: Observability with LGTM Stack (via Terraform)
 
-In this real-world scenario, we will use Terraform to:
-1.  Provision the Datadog Agent.
-2.  Deploy a custom "Metric Generator" service that emits business metrics (checkout latency).
-3.  Create advanced monitors (Anomaly Detection & Composite Alerts) to watch those metrics.
+In this section, we will build a complete observability stack from scratch using Terraform. We will provision a Kubernetes cluster, install the LGTM stack (Loki, Grafana, Tempo, Mimir/Prometheus), and deploy a sample application that emits metrics.
 
-**Prerequisites:**
-1.  Datadog Account (API Key & App Key).
-2.  Terraform installed.
+**Directory Structure:**
+We will work in the `intermediate-3` directory.
+```
+intermediate-3/
+  express-app/          # (Pre-provided app code)
+  traffic-generator/    # (Pre-provided generator script)
+  terraform/            # (We will create this)
+```
 
-**1. Setup Providers**
-We need `datadog` (for monitors), `helm` (for the agent), and `kubernetes` (for the app).
+**Step 1: Initialize Terraform Workspace**
+
+Create a new directory `terraform` inside `intermediate-3` and switch to it.
+
+```bash
+mkdir -p intermediate-3/terraform
+cd intermediate-3/terraform
+```
+
+**Step 2: Configure Providers (`providers.tf`)**
+
+Create `providers.tf` to define our dependencies: DigitalOcean, Kubernetes, and Helm.
 
 ```hcl
 terraform {
+  required_version = ">= 1.0.0"
+
   required_providers {
-    datadog = { source = "DataDog/datadog" }
-    helm    = { source = "hashicorp/helm" }
-    kubernetes = { source = "hashicorp/kubernetes" }
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.0"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.0"
+    }
   }
 }
 
-provider "datadog" {
-  api_key = var.datadog_api_key
-  app_key = var.datadog_app_key
-}
-
-provider "helm" {
-  kubernetes { config_path = "~/.kube/config" }
+provider "digitalocean" {
+  token = var.do_token
 }
 
 provider "kubernetes" {
-  config_path = "~/.kube/config"
+  host                   = digitalocean_kubernetes_cluster.k8s_cluster.endpoint
+  token                  = digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].token
+  cluster_ca_certificate = base64decode(digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].cluster_ca_certificate)
+}
+
+provider "helm" {
+  kubernetes {
+    host                   = digitalocean_kubernetes_cluster.k8s_cluster.endpoint
+    token                  = digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].token
+    cluster_ca_certificate = base64decode(digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].cluster_ca_certificate)
+  }
 }
 ```
 
-**2. Install Datadog Agent**
-Deploy the agent to all nodes to collect metrics and logs.
+**Step 3: Define Variables (`variables.tf`)**
+
+Create `variables.tf` to make our configuration reusable.
 
 ```hcl
-resource "helm_release" "datadog_agent" {
-  name       = "datadog"
-  repository = "https://helm.datadoghq.com"
-  chart      = "datadog"
-  namespace  = "datadog"
-  create_namespace = true
+variable "do_token" {
+  description = "DigitalOcean API Token"
+  type        = string
+  sensitive   = true
+}
 
-  set_sensitive {
-    name  = "datadog.apiKey"
-    value = var.datadog_api_key
+variable "region" {
+  description = "DigitalOcean region"
+  type        = string
+  default     = "nyc1"
+}
+
+variable "cluster_name" {
+  description = "Name of the Kubernetes cluster"
+  type        = string
+  default     = "lgtm-stack-cluster"
+}
+
+variable "k8s_version" {
+  description = "Kubernetes version"
+  type        = string
+  default     = "1.29.1-do.0"
+}
+
+variable "node_count" {
+  description = "Number of worker nodes"
+  type        = number
+  default     = 3
+}
+```
+
+**Step 4: Provision the Cluster (`main.tf`)**
+
+Create `main.tf` to provision the DOKS cluster.
+
+```hcl
+resource "digitalocean_kubernetes_cluster" "k8s_cluster" {
+  name    = var.cluster_name
+  region  = var.region
+  version = var.k8s_version
+
+  node_pool {
+    name       = "worker-pool"
+    size       = "s-4vcpu-8gb" # Need enough resources for LGTM stack
+    node_count = var.node_count
   }
-  # Enable DogStatsD for custom metrics
+}
+```
+
+**Step 5: Define Observability Stack (`observability.tf`)**
+
+Create `observability.tf` to install Prometheus, Grafana, Loki, and Tempo using Helm charts.
+
+```hcl
+resource "kubernetes_namespace" "monitoring" {
+  metadata {
+    name = "monitoring"
+  }
+}
+
+# 1. Prometheus & Grafana (Metrics & Visualization)
+resource "helm_release" "kube_prometheus_stack" {
+  name       = "kube-prometheus-stack"
+  repository = "https://prometheus-community.github.io/helm-charts"
+  chart      = "kube-prometheus-stack"
+  namespace  = kubernetes_namespace.monitoring.metadata[0].name
+
   set {
-    name  = "datadog.dogstatsd.useHostPort"
+    name  = "grafana.adminPassword"
+    value = "admin" # Change in production!
+  }
+  
+  # Enable ServiceMonitor discovery
+  set {
+    name  = "prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues"
+    value = "false"
+  }
+}
+
+# 2. Loki & Promtail (Logs)
+resource "helm_release" "loki_stack" {
+  name       = "loki"
+  repository = "https://grafana.github.io/helm-charts"
+  chart      = "loki-stack"
+  namespace  = kubernetes_namespace.monitoring.metadata[0].name
+
+  set {
+    name  = "promtail.enabled"
     value = "true"
   }
+  
+  # Configure Loki to work with Grafana
+  set {
+    name  = "grafana.enabled"
+    value = "false" # We use the Grafana from kube-prometheus-stack
+  }
+}
+
+# 3. Tempo (Traces)
+resource "helm_release" "tempo" {
+  name       = "tempo"
+  repository = "https://grafana.github.io/helm-charts"
+  chart      = "tempo"
+  namespace  = kubernetes_namespace.monitoring.metadata[0].name
 }
 ```
 
-**3. Deploy Express App & Traffic Generator**
-We will deploy a simple Express.js app that emits a custom metric `custom.checkout.latency` via DogStatsD. We also deploy a traffic generator to hit the endpoint.
+**Step 6: Deploy Application (`app.tf`)**
 
-*Note: The source code for these apps is in the `intermediate-3/` folder.*
+Create `app.tf` to deploy the Express app and Traffic Generator. We will inject the application code from the `../express-app` directory using a ConfigMap.
 
 ```hcl
-# 1. Express App Code (Mounted via ConfigMap for simplicity)
-resource "kubernetes_config_map" "express_code" {
-  metadata { name = "express-code" }
+resource "kubernetes_namespace" "app" {
+  metadata {
+    name = "app"
+  }
+}
+
+# 1. Express App Code
+resource "kubernetes_config_map" "express_app_code" {
+  metadata {
+    name      = "express-app-code"
+    namespace = kubernetes_namespace.app.metadata[0].name
+  }
+
   data = {
-    "index.js" = file("${path.module}/../intermediate-3/express-app/index.js")
-    "package.json" = file("${path.module}/../intermediate-3/express-app/package.json")
+    "index.js"     = file("${path.module}/../express-app/index.js")
+    "package.json" = file("${path.module}/../express-app/package.json")
   }
 }
 
 # 2. Express App Deployment
 resource "kubernetes_deployment" "express_app" {
-  metadata { name = "express-app" }
+  metadata {
+    name      = "express-app"
+    namespace = kubernetes_namespace.app.metadata[0].name
+    labels = {
+      app = "express-app"
+    }
+  }
+
   spec {
-    replicas = 1
-    selector { match_labels = { app = "express-app" } }
+    replicas = 2
+    selector {
+      match_labels = {
+        app = "express-app"
+      }
+    }
+
     template {
-      metadata { labels = { app = "express-app" } }
+      metadata {
+        labels = {
+          app = "express-app"
+        }
+      }
+
       spec {
-        container {
-          image = "node:18-alpine"
-          name  = "express"
-          command = ["/bin/sh", "-c"]
-          # Install deps and run
-          args = ["cd /app && npm install && node index.js"]
+        init_container {
+          name    = "setup"
+          image   = "node:18-alpine"
+          command = ["sh", "-c", "cp /config/* /app/ && cd /app && npm install"]
           
-          # Inject Node IP to reach the Datadog Agent
-          env {
-            name = "DD_AGENT_HOST"
-            value_from {
-              field_ref { field_path = "status.hostIP" }
-            }
+          volume_mount {
+            name       = "code"
+            mount_path = "/config"
           }
           volume_mount {
-            name       = "code-vol"
+            name       = "workdir"
             mount_path = "/app"
           }
         }
+
+        container {
+          name    = "app"
+          image   = "node:18-alpine"
+          command = ["node", "/app/index.js"]
+          working_dir = "/app"
+
+          port {
+            name = "http"
+            container_port = 8080
+          }
+
+          volume_mount {
+            name       = "workdir"
+            mount_path = "/app"
+          }
+        }
+
         volume {
-          name = "code-vol"
-          config_map { name = "express-code" }
+          name = "code"
+          config_map {
+            name = kubernetes_config_map.express_app_code.metadata[0].name
+          }
+        }
+
+        volume {
+          name = "workdir"
+          empty_dir {}
         }
       }
     }
   }
 }
 
-# 3. Service for Express App
+# 3. Express App Service
 resource "kubernetes_service" "express_service" {
-  metadata { name = "express-service" }
+  metadata {
+    name      = "express-service"
+    namespace = kubernetes_namespace.app.metadata[0].name
+    labels = {
+      app = "express-app"
+    }
+  }
+
   spec {
-    selector = { app = "express-app" }
+    selector = {
+      app = "express-app"
+    }
     port {
+      name        = "http"
       port        = 8080
       target_port = 8080
     }
   }
 }
 
-# 4. Traffic Generator
+# 4. ServiceMonitor for Prometheus
+resource "kubernetes_manifest" "express_servicemonitor" {
+  manifest = {
+    apiVersion = "monitoring.coreos.com/v1"
+    kind       = "ServiceMonitor"
+    metadata = {
+      name      = "express-monitor"
+      namespace = kubernetes_namespace.monitoring.metadata[0].name
+      labels = {
+        release = "kube-prometheus-stack" # Important for Prometheus to pick it up
+      }
+    }
+    spec = {
+      selector = {
+        matchLabels = {
+          app = "express-app"
+        }
+      }
+      namespaceSelector = {
+        matchNames = ["app"]
+      }
+      endpoints = [
+        {
+          port = "http"
+          path = "/metrics"
+        }
+      ]
+    }
+  }
+  depends_on = [helm_release.kube_prometheus_stack]
+}
+
+# 5. Traffic Generator
 resource "kubernetes_deployment" "traffic_generator" {
-  metadata { name = "traffic-generator" }
+  metadata {
+    name      = "traffic-generator"
+    namespace = kubernetes_namespace.app.metadata[0].name
+  }
+
   spec {
     replicas = 1
-    selector { match_labels = { app = "traffic-generator" } }
+    selector {
+      match_labels = {
+        app = "traffic-generator"
+      }
+    }
+
     template {
-      metadata { labels = { app = "traffic-generator" } }
+      metadata {
+        labels = {
+          app = "traffic-generator"
+        }
+      }
+
       spec {
         container {
-          image = "curlimages/curl"
-          name  = "traffic"
-          command = ["/bin/sh", "-c"]
-          args = ["while true; do curl -s http://express-service:8080/checkout; echo ''; sleep 1; done"]
+          name    = "generator"
+          image   = "curlimages/curl"
+          command = ["/bin/sh", "-c", "while true; do curl -s http://express-service.app.svc.cluster.local:8080/checkout; sleep 1; done"]
         }
       }
     }
@@ -867,65 +1094,46 @@ resource "kubernetes_deployment" "traffic_generator" {
 }
 ```
 
-**4. Create Advanced Monitors**
-Now that data is flowing, let's create monitors that are impossible to manage manually at scale.
+**Step 7: Outputs (`outputs.tf`)**
 
-**Monitor A: Anomaly Detection**
-Alert if latency behaves differently than usual (e.g., sudden spike compared to last week).
+Create `outputs.tf` to easily retrieve access information.
 
 ```hcl
-resource "datadog_monitor" "latency_anomaly" {
-  name    = "[Anomaly] Checkout Latency Deviation"
-  type    = "query alert"
-  message = "Latency is abnormal! @slack-channel"
-  
-  # Query: Average latency over last 1h, using 'basic' algorithm, 2 deviations
-  query = "avg(last_1h):anomalies(avg:custom.checkout.latency{service:checkout-api}, 'basic', 2) > 1"
+output "kubeconfig" {
+  value     = digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].raw_config
+  sensitive = true
+}
 
-  monitor_thresholds {
-    critical = 1.0
-  }
+output "grafana_password" {
+  value = "admin"
+  description = "Grafana admin password (set in observability.tf)"
+}
+
+output "grafana_port_forward_cmd" {
+  value = "kubectl port-forward svc/kube-prometheus-stack-grafana -n monitoring 3000:80"
 }
 ```
 
-**Monitor B: Composite Monitor**
-Reduce noise by alerting ONLY if Latency is high AND CPU is high.
+**Step 8: Apply and Verify**
 
-```hcl
-# 1. High Latency Monitor (Hidden)
-resource "datadog_monitor" "latency_high" {
-  name    = "High Latency"
-  type    = "metric alert"
-  query   = "avg(last_5m):avg:custom.checkout.latency{service:checkout-api} > 400"
-  message = "Latency > 400ms"
-}
-
-# 2. High CPU Monitor (Hidden)
-resource "datadog_monitor" "cpu_high" {
-  name    = "High CPU"
-  type    = "metric alert"
-  query   = "avg(last_5m):avg:system.cpu.idle{*} by {host} < 10"
-  message = "CPU Idle < 10%"
-}
-
-# 3. Composite Monitor (The real alert)
-resource "datadog_monitor" "composite_alert" {
-  name    = "[Critical] High Latency AND High CPU"
-  type    = "composite"
-  message = "System is overloaded and slow! @pagerduty"
-  
-  # Logic: Trigger if BOTH monitors are in Alert state
-  query   = "${datadog_monitor.latency_high.id} && ${datadog_monitor.cpu_high.id}"
-}
-```
-
-**5. Apply & Verify**
-```bash
-export TF_VAR_datadog_api_key="your-key"
-export TF_VAR_datadog_app_key="your-app-key"
-terraform apply
-```
-Go to Datadog > Metrics > Explorer and search for `custom.checkout.latency` to see your data!
+1.  Create `terraform.tfvars` with your token:
+    ```hcl
+    do_token = "your_token_here"
+    ```
+2.  Run the automation:
+    ```bash
+    terraform init
+    terraform apply
+    ```
+3.  Access Grafana:
+    ```bash
+    # Get the port-forward command from output
+    terraform output -raw grafana_port_forward_cmd | sh
+    ```
+4.  Login to `http://localhost:3000` (admin/admin).
+5.  Go to **Explore**.
+6.  Select **Prometheus** and query `custom_checkout_latency`.
+7.  Select **Loki** and query `{app="express-app"}` to see logs.
 
 ---
 

@@ -1,13 +1,20 @@
 const express = require('express');
-const StatsD = require('hot-shots');
+const client = require('prom-client');
 const app = express();
 
-// Initialize DogStatsD client
-const client = new StatsD({
-  host: process.env.DD_AGENT_HOST,
-  port: 8125,
-  globalTags: { env: 'production', service: 'checkout-api' }
+// Initialize Prometheus registry
+const register = new client.Registry();
+
+// Add default metrics (CPU, memory, etc.)
+client.collectDefaultMetrics({ register });
+
+// Create a custom metric for latency
+const checkoutLatency = new client.Gauge({
+  name: 'custom_checkout_latency',
+  help: 'Latency of checkout requests in ms',
+  labelNames: ['env', 'service']
 });
+register.registerMetric(checkoutLatency);
 
 app.get('/checkout', (req, res) => {
   const start = Date.now();
@@ -18,12 +25,18 @@ app.get('/checkout', (req, res) => {
   setTimeout(() => {
     const duration = Date.now() - start;
     
-    // Send custom metric to Datadog
-    client.gauge('custom.checkout.latency', duration);
+    // Record metric
+    checkoutLatency.set({ env: 'production', service: 'checkout-api' }, duration);
     console.log(`Checkout processed in ${duration}ms`);
     
     res.json({ status: 'success', duration: duration });
   }, delay);
+});
+
+// Expose metrics endpoint
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', register.contentType);
+  res.end(await register.metrics());
 });
 
 app.listen(8080, () => {
