@@ -225,6 +225,15 @@ export KUBECONFIG=$(pwd)/kubeconfig.yaml
 kubectl get nodes
 ```
 
+**Cleaning Up:**
+
+To destroy the infrastructure created by Terraform and stop billing:
+
+```bash
+terraform destroy
+# Type 'yes' to confirm
+```
+
 **🏭 Industry Best Practice - State Management:**
 - **Local State**: The `terraform.tfstate` file is stored on your machine. Good for learning/solo.
 - **Remote State**: In production, store state in a remote backend (S3, Terraform Cloud) to allow team collaboration and locking.
@@ -242,122 +251,315 @@ GitOps is a set of practices to manage infrastructure and application configurat
 3.  **Automated**: Changes to Git are automatically applied to the system.
 4.  **Self-Healing**: The system ensures the actual state matches the desired state.
 
-### Installing ArgoCD
+### Infrastructure & ArgoCD Setup with Terraform
 
-We will install ArgoCD into our cluster.
+We will provision the DigitalOcean Kubernetes Service (DOKS) and install ArgoCD in a single Terraform run. To keep things organized, we will split our configuration into multiple files.
 
+**1. Define Variables (`variables.tf`)**
+```hcl
+variable "do_token" {
+  description = "DigitalOcean API Token"
+  type        = string
+  sensitive   = true
+}
+
+variable "region" {
+  description = "DigitalOcean region"
+  type        = string
+  default     = "nyc1"
+}
+```
+
+**Set Secrets in `terraform.tfvars`**
+Create a file named `terraform.tfvars` to store your sensitive values. **Do not commit this file to Git.**
+
+```hcl
+do_token = "dop_v1_your_digitalocean_token_here"
+```
+
+**2. Configure Providers (`providers.tf`)**
+```hcl
+terraform {
+  required_providers {
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.0"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = "~> 2.0"
+    }
+  }
+}
+
+provider "digitalocean" {
+  token = var.do_token
+}
+
+# Configure Kubernetes Provider (Directly, NO kubernetes block)
+provider "kubernetes" {
+  host  = digitalocean_kubernetes_cluster.k8s_cluster.endpoint
+  token = digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].token
+  cluster_ca_certificate = base64decode(
+    digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].cluster_ca_certificate
+  )
+}
+
+# Configure Helm Provider (Inside kubernetes block)
+provider "helm" {
+  kubernetes {
+    host  = digitalocean_kubernetes_cluster.k8s_cluster.endpoint
+    token = digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].token
+    cluster_ca_certificate = base64decode(
+      digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].cluster_ca_certificate
+    )
+  }
+}
+```
+
+> **Note**: If you get an error like `Unexpected block: Blocks of type "kubernetes" are not expected here`, ensure you are using the correct syntax for each provider (Helm uses the block, Kubernetes does not) and run `terraform init -upgrade` to ensure you have the latest provider versions.
+
+**3. Provision Cluster (`main.tf`)**
+```hcl
+resource "digitalocean_kubernetes_cluster" "k8s_cluster" {
+  name    = "doks-gitops"
+  region  = var.region
+  version = "1.28.2-do.0"
+
+  node_pool {
+    name       = "worker-pool"
+    size       = "s-4vcpu-8gb" # Recommended for ArgoCD + Apps
+    node_count = 2
+  }
+}
+```
+
+**4. Install ArgoCD (`argocd.tf`)**
+```hcl
+resource "helm_release" "argocd" {
+  name             = "argocd"
+  repository       = "https://argoproj.github.io/argo-helm"
+  chart            = "argo-cd"
+  namespace        = "argocd"
+  create_namespace = true
+  version          = "5.46.7"
+
+  set {
+    name  = "server.service.type"
+    value = "LoadBalancer"
+  }
+  
+  depends_on = [digitalocean_kubernetes_cluster.k8s_cluster]
+}
+```
+
+**5. Define Outputs (`outputs.tf`)**
+To retrieve the kubeconfig after provisioning, we must explicitly define it as an output.
+
+```hcl
+output "kubeconfig" {
+  value     = digitalocean_kubernetes_cluster.k8s_cluster.kube_config[0].raw_config
+  sensitive = true
+}
+```
+
+**6. Apply Configuration**
+Create a `terraform.tfvars` file with your token:
+```hcl
+do_token = "dop_v1_..."
+```
+
+Run the automation:
 ```bash
-# Create namespace
-kubectl create namespace argocd
+terraform init
+terraform apply
+```
 
-# Install ArgoCD (stable version)
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+**Login Credentials:**
+The default username is `admin`. The initial password is stored in a secret. You can retrieve it via `kubectl`:
+```bash
+# Configure kubectl to use the new cluster
+terraform output -raw kubeconfig > kubeconfig.yaml
+export KUBECONFIG=$(pwd)/kubeconfig.yaml
+
+# Get password
+kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
 ```
 
 **Accessing the UI:**
 
-By default, the ArgoCD API server is not exposed with an external IP. We can use port-forwarding to access it.
-
+If you used `LoadBalancer`, get the external IP:
 ```bash
-# Port forward to localhost:8080
-kubectl port-forward svc/argocd-server -n argocd 8080:443
+kubectl get svc argocd-server -n argocd
 ```
 
-Open `https://localhost:8080` in your browser. Accept the self-signed certificate warning.
+Copy the `EXTERNAL-IP` and visit `https://<EXTERNAL-IP>` in your browser.
+> **Note**: You will see a security warning because ArgoCD uses a self-signed certificate by default. You can safely accept the risk and proceed.
 
-**Login Credentials:**
--   **Username**: `admin`
--   **Password**: The initial password is the name of the ArgoCD server pod.
-    ```bash
-    kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d; echo
-    ```
+### Deploying Applications via Terraform
 
-### Deploying Applications via Git
+In a pure GitOps setup, you often use Terraform to "bootstrap" the initial ArgoCD Application, which then manages other applications (App of Apps pattern).
 
-We will deploy a sample "Guestbook" application from a public Git repository.
+We can use the `kubernetes_manifest` resource to deploy the "Guestbook" application.
 
-**Declarative Setup (The GitOps Way):**
+**Define the Application**
+Append to `argocd.tf`:
 
-Create a file named `application.yaml`:
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: guestbook
-  namespace: argocd
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/argoproj/argocd-example-apps.git
-    targetRevision: HEAD
-    path: guestbook
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: guestbook
-  syncPolicy:
-    automated:
-      prune: true      # Delete resources that are no longer in Git
-      selfHeal: true   # Fix resources that drift from Git state
-    syncOptions:
-    - CreateNamespace=true
+```hcl
+resource "kubernetes_manifest" "guestbook_app" {
+  manifest = {
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name      = "guestbook"
+      namespace = "argocd"
+    }
+    spec = {
+      project = "default"
+      source = {
+        repoURL        = "https://github.com/argoproj/argocd-example-apps.git"
+        targetRevision = "HEAD"
+        path           = "guestbook"
+      }
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "guestbook"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+        syncOptions = ["CreateNamespace=true"]
+      }
+    }
+  }
+  
+  depends_on = [helm_release.argocd]
+}
 ```
 
-Apply this manifest:
-```bash
-kubectl apply -f application.yaml
+Run `terraform apply`. Check the ArgoCD UI to see the application syncing.
+
+### Connecting Private Git Repositories
+
+For production, your Git repository will likely be private. ArgoCD needs credentials to access it. You can configure this declaratively using a Kubernetes Secret with the label `argocd.argoproj.io/secret-type: repository`.
+
+**Add this to `argocd.tf`:**
+
+```hcl
+resource "kubernetes_secret" "private_repo_creds" {
+  metadata {
+    name      = "private-repo-creds"
+    namespace = "argocd"
+    labels = {
+      "argocd.argoproj.io/secret-type" = "repository"
+    }
+  }
+
+  data = {
+    type          = "git"
+    url           = "git@github.com:your-username/your-private-repo.git"
+    sshPrivateKey = var.git_ssh_key
+  }
+}
 ```
 
-Check the ArgoCD UI. You should see the "guestbook" application syncing and turning green (Healthy).
+**Update `variables.tf`:**
+
+```hcl
+variable "git_ssh_key" {
+  description = "SSH Private Key for Git Access"
+  type        = string
+  sensitive   = true
+}
+```
 
 ### Sync Strategies & Self-Healing
 
 In the `syncPolicy` above, we enabled:
--   **Automated Sync**: ArgoCD watches Git and applies changes automatically (usually polls every 3 mins).
--   **Prune**: If you remove a file from Git, ArgoCD deletes the resource from the cluster.
--   **Self-Healing**: If you manually delete a deployment (`kubectl delete deploy ...`), ArgoCD detects the drift and immediately recreates it to match Git.
+-   **Automated Sync**: ArgoCD watches Git and applies changes automatically.
+-   **Prune**: If you remove a file from Git, ArgoCD deletes the resource.
+-   **Self-Healing**: If you manually delete a deployment, ArgoCD recreates it.
 
 **Exercise:**
-1.  Manually scale the guestbook deployment: `kubectl scale deploy guestbook-ui --replicas=5 -n guestbook`
-2.  Watch ArgoCD immediately revert it back to the number defined in Git (1 replica).
-3.  This proves Git is the source of truth!
+1.  Open a new terminal window and watch the pods to see the reaction in real-time:
+    ```bash
+    kubectl get pods -n guestbook -w
+    ```
+2.  In your original terminal, manually scale the deployment:
+    ```bash
+    kubectl scale deploy guestbook-ui --replicas=5 -n guestbook
+    ```
+3.  Watch the first terminal. You will see new pods appearing and then almost immediately terminating as ArgoCD detects the drift and reverts the change.
+
+### Manual Sync (Approval Workflow)
+
+If you want to review changes before they are applied (e.g., for Production environments), you can disable automated sync. This forces an administrator to manually click the "Sync" button in the ArgoCD UI.
+
+To do this, simply remove the `automated` block from your `syncPolicy`:
+
+```hcl
+      syncPolicy = {
+        # automated = { ... }  <-- Remove this block
+        syncOptions = ["CreateNamespace=true"]
+      }
+```
+
+Now, when you push to Git, ArgoCD will show the application as "OutOfSync", allowing you to diff the changes and approve them by syncing manually.
 
 ### Managing Secrets in GitOps
 
-**Problem**: You cannot store raw secrets (passwords, API keys) in public Git repositories.
+**Problem**: You cannot store raw secrets in public Git repositories.
 **Solution**: **Sealed Secrets** by Bitnami.
 
-1.  **Install Sealed Secrets Controller**:
-    ```bash
-    helm repo add sealed-secrets https://bitnami-labs.github.io/sealed-secrets
-    helm install sealed-secrets -n kube-system --create-namespace sealed-secrets/sealed-secrets
-    ```
+**Install Sealed Secrets with Terraform:**
 
-2.  **Install kubeseal CLI**:
-    ```bash
-    # macOS
-    brew install kubeseal
+Add this to `argocd.tf`:
 
-    # Linux
-    # Fetch latest version tag
-    KUBESEAL_VERSION=$(curl -s https://api.github.com/repos/bitnami-labs/sealed-secrets/releases/latest | grep tag_name | cut -d '"' -f 4 | cut -c 2-)
-    wget "https://github.com/bitnami-labs/sealed-secrets/releases/download/v${KUBESEAL_VERSION}/kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz"
-    tar -xvzf kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz kubeseal
-    sudo install -m 755 kubeseal /usr/local/bin/kubeseal
-    ```
+```hcl
+resource "helm_release" "sealed_secrets" {
+  name             = "sealed-secrets"
+  repository       = "https://bitnami-labs.github.io/sealed-secrets"
+  chart            = "sealed-secrets"
+  namespace        = "kube-system"
+  create_namespace = true
+}
+```
 
-3.  **Workflow**:
-    -   Create a regular Secret locally (do not commit!).
-    -   Encrypt it with `kubeseal`.
-    -   Commit the `SealedSecret` CRD to Git.
-    -   Controller decrypts it inside the cluster.
+**Install kubeseal CLI:**
+```bash
+# macOS
+brew install kubeseal
+
+# Linux
+# Fetch latest version tag
+KUBESEAL_VERSION=$(curl -s https://api.github.com/repos/bitnami-labs/sealed-secrets/releases/latest | grep tag_name | cut -d '"' -f 4 | cut -c 2-)
+wget "https://github.com/bitnami-labs/sealed-secrets/releases/download/v${KUBESEAL_VERSION}/kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz"
+tar -xvzf kubeseal-${KUBESEAL_VERSION}-linux-amd64.tar.gz kubeseal
+sudo install -m 755 kubeseal /usr/local/bin/kubeseal
+```
+
+**Workflow:**
+1.  Create a regular Secret locally (do not commit!).
+2.  Encrypt it with `kubeseal`.
+3.  Commit the `SealedSecret` CRD to Git.
+4.  Controller decrypts it inside the cluster.
+
+**Is it safe to commit?**
+Yes! It is safe to commit `SealedSecret` manifests to **public** repositories. The file contains encrypted data that can **only** be decrypted by the Sealed Secrets controller running in your specific cluster. The encryption uses asymmetric cryptography: `kubeseal` uses a public key to encrypt, but only the controller holds the private key needed to decrypt.
 
 ```bash
 # Create secret locally (dry-run)
 kubectl create secret generic db-pass --from-literal=password=supersecret --dry-run=client -o yaml > secret.yaml
 
 # Seal it
-kubeseal < secret.yaml > sealed-secret.yaml
+# Note: We specify flags because the Helm chart service name differs from the default
+kubeseal --controller-name=sealed-secrets --controller-namespace=kube-system < secret.yaml > sealed-secret.yaml
 
 # Apply (or commit to Git for ArgoCD to pick up)
 kubectl apply -f sealed-secret.yaml

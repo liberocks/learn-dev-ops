@@ -1,1 +1,8 @@
 node_modules/
+*.tfvars*
+*.tfstate*
+.terraform/
+.terraform.*
+kubeconfig.yaml
+kubeconfig.yml
+secret.yaml
