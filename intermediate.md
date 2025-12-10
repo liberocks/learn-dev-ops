@@ -443,6 +443,17 @@ resource "kubernetes_manifest" "guestbook_app" {
 }
 ```
 
+> **Troubleshooting**: If you see `Error: cannot create REST client: no client config`, it means Terraform cannot connect to the cluster yet.
+> **Solution**: Run the apply in two stages:
+> 1. Create the cluster and install ArgoCD first:
+>    ```bash
+>    terraform apply -target=helm_release.argocd
+>    ```
+> 2. Then apply the application manifest:
+>    ```bash
+>    terraform apply
+>    ```
+
 Run `terraform apply`. Check the ArgoCD UI to see the application syncing.
 
 ### Connecting Private Git Repositories
@@ -564,6 +575,36 @@ kubeseal --controller-name=sealed-secrets --controller-namespace=kube-system < s
 # Apply (or commit to Git for ArgoCD to pick up)
 kubectl apply -f sealed-secret.yaml
 ```
+
+**Using the Secret in an Application:**
+
+When the `SealedSecret` is applied, the controller decrypts it and creates a standard Kubernetes `Secret` with the same name (e.g., `db-pass`). Your application references this standard secret as usual.
+
+Here is a real example using a simple Pod that prints the secret to the logs (for demonstration purposes):
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-test-app
+spec:
+  containers:
+  - name: test-container
+    image: busybox
+    command: ["sh", "-c", "while true; do echo \"My secret password is: $DB_PASSWORD\"; sleep 10; done"]
+    env:
+    - name: DB_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: db-pass  # References the decrypted Secret created by SealedSecrets
+          key: password
+```
+
+**Verify it works:**
+1. Save the above YAML as `pod-secret-test.yaml`.
+2. Apply it: `kubectl apply -f pod-secret-test.yaml`.
+3. Check logs: `kubectl logs secret-test-app`.
+   You should see: `My secret password is: supersecret`.
 
 ---
 
