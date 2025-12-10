@@ -4276,10 +4276,20 @@ kubectl config use-context <other-context-name>
 ```
 
 ## **Quick Command**
-The simplest approach after deleting a DOKS cluster:
+The simplest approach after deleting a DOKS cluster to clean up your local configuration:
 
 ```bash
 doctl kubernetes cluster kubeconfig remove learn-k8s
 ```
 
 This removes all associated entries (context, cluster, and user) from your kubeconfig automatically!
+
+> **Warning:** This command **does not** delete the DigitalOcean Load Balancer or other cloud resources. It only cleans up your local `kubeconfig` file. Ensure you have deleted the Load Balancer separately to avoid costs:
+
+```bash
+# Check for remaining load balancers
+doctl compute load-balancer list
+
+# Delete if found
+doctl compute load-balancer delete <id>
+```
